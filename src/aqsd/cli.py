@@ -5,23 +5,80 @@ import sys
 from datetime import datetime
 from typing import TextIO
 
+from loguru import logger
+
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_search_candidates
-from aqsd.models import Candidate
+from aqsd.database import Database
+from aqsd.models import Candidate, DownloadTask
+from aqsd.qbittorrent import QBittorrentClient
+from aqsd.utils import build_task_tag
 
 
-def run_search_command(args: argparse.Namespace, config: AppConfig, out: TextIO | None = None) -> None:
+def run_search_command(args: argparse.Namespace, config: AppConfig, out: TextIO | None = None) -> int:
     stream = out or sys.stdout
     request = build_search_request(args)
     result = discover_search_candidates(config, request)
 
     if not result.candidates:
         print("No candidates found.", file=stream)
-        return
+        return 0
 
     print(_build_header(), file=stream)
     for index, candidate in enumerate(result.candidates, start=1):
         print(_format_candidate_row(index, candidate), file=stream)
+    return 0
+
+
+def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextIO | None = None) -> int:
+    stream = out or sys.stdout
+    request = build_search_request(args)
+    result = discover_search_candidates(config, request)
+
+    if not result.candidates:
+        print("No candidates found for download.", file=stream)
+        return 1
+
+    best = max(result.candidates, key=lambda item: (item.score, item.seeders))
+    best.task_tag = build_task_tag(best.anime_name or request.query or "anime", best.episode or "00")
+
+    db = Database(config.app.database)
+    qb = QBittorrentClient(
+        base_url=config.qb.base_url,
+        username=config.qb.username,
+        password=config.qb.password,
+    )
+
+    try:
+        qb.login()
+        qb.add_torrent(
+            best.url,
+            category=best.category,
+            save_path=best.save_path,
+            tags=best.task_tag,
+        )
+        db.record_task(
+            DownloadTask(
+                task_tag=best.task_tag,
+                anime_name=best.anime_name or request.query,
+                episode=best.episode or "00",
+                title=best.title,
+                url=best.url,
+                category=best.category,
+                save_path=best.save_path,
+                status="submitted",
+            )
+        )
+    except Exception as exc:
+        logger.exception(exc)
+        print(f"Failed to add torrent: {exc}", file=stream)
+        return 1
+    finally:
+        db.close()
+
+    print(f"Added torrent: {best.title}", file=stream)
+    print(f"Task tag: {best.task_tag}", file=stream)
+    return 0
 
 
 def build_search_request(args: argparse.Namespace) -> SearchRequest:

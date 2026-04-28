@@ -6,7 +6,7 @@ import time
 
 from loguru import logger
 
-from aqsd.cli import run_search_command
+from aqsd.cli import run_download_command, run_search_command
 from aqsd.config import load_config
 from aqsd.database import Database
 from aqsd.dryrun import run_dry_run
@@ -26,31 +26,38 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     search_parser = subparsers.add_parser("search", help="Search RSS candidates without downloading.")
     search_parser.add_argument("query", help="Anime name to search.")
-    search_parser.add_argument(
+    _add_search_like_arguments(search_parser)
+    download_parser = subparsers.add_parser("download", help="Search candidates and add the best one to qBittorrent.")
+    download_parser.add_argument("query", help="Anime name to search.")
+    _add_search_like_arguments(download_parser)
+    return parser
+
+
+def _add_search_like_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
         "--episode",
         dest="episodes",
         action="append",
         default=[],
         help="Episode to keep. Repeat the flag to include multiple episodes.",
     )
-    search_parser.add_argument("--resolution", help="Filter by resolution, for example 1080p.")
-    search_parser.add_argument(
+    parser.add_argument("--resolution", help="Filter by resolution, for example 1080p.")
+    parser.add_argument(
         "--group",
         dest="groups",
         action="append",
         default=[],
         help="Release group to keep. Repeat the flag to include multiple groups.",
     )
-    search_parser.add_argument(
+    parser.add_argument(
         "--subtitle",
         choices=["embedded", "external", "none", "unknown", "any"],
         default="any",
         help="Filter by subtitle type.",
     )
-    search_parser.add_argument("--raw-only", action="store_true", help="Only keep RAW / subtitle-free releases.")
-    search_parser.add_argument("--min-seeders", type=int, default=0, help="Minimum seeders required.")
-    search_parser.add_argument("--limit", type=int, default=None, help="Maximum number of results to show.")
-    return parser
+    parser.add_argument("--raw-only", action="store_true", help="Only keep RAW / subtitle-free releases.")
+    parser.add_argument("--min-seeders", type=int, default=0, help="Minimum seeders required.")
+    parser.add_argument("--limit", type=int, default=None, help="Maximum number of results to show.")
 
 
 def configure_logging(level: str) -> None:
@@ -93,7 +100,11 @@ def main() -> None:
     configure_logging(config.app.log_level)
 
     if args.command == "search":
-        run_search_command(args, config)
+        raise SystemExit(run_search_command(args, config))
+        return
+
+    if args.command == "download":
+        raise SystemExit(run_download_command(args, config))
         return
 
     if args.check:

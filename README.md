@@ -133,6 +133,22 @@ Show only RAW / subtitle-free candidates:
 aqsd search "Example Anime" --raw-only
 ```
 
+### Download the best matching candidate
+
+Search within the configured RSS sources, pick the highest-scoring candidate, and send it to qBittorrent:
+
+```bash
+aqsd download "Example Anime" --episode 01 --resolution 1080p --group LoliHouse --subtitle embedded
+```
+
+Use stricter seeder and RAW-only filters when needed:
+
+```bash
+aqsd download "Example Anime" --raw-only --min-seeders 5 --limit 10
+```
+
+The `download` command only searches within entries visible from your configured `rss_sources`. It does not query external indexers beyond those feeds.
+
 ### Dry-run mode
 
 Inspect RSS entries, parsing, matching, and scoring without adding any torrent:
