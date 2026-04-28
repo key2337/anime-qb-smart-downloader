@@ -195,9 +195,12 @@ class SearchCliTests(unittest.TestCase):
             save_path=better.save_path,
             tags=better.task_tag,
         )
-        mock_db.record_task.assert_called_once()
-        recorded_task = mock_db.record_task.call_args.args[0]
+        mock_db.create_download_task.assert_called_once()
+        recorded_task = mock_db.create_download_task.call_args.args[0]
         self.assertEqual(recorded_task.title, better.title)
+        self.assertEqual(recorded_task.selection_mode, "manual")
+        self.assertEqual(recorded_task.candidate_score, better.score)
+        self.assertEqual(recorded_task.source, better.source)
         self.assertEqual(recorded_task.status, "submitted")
         self.assertNotIn(recorded_task.status, {"completed", "done"})
         self.assertIn("Added torrent:", output.getvalue())
@@ -273,7 +276,7 @@ class SearchCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertIn("Failed to add torrent: boom", output.getvalue())
-        mock_db.record_task.assert_not_called()
+        mock_db.create_download_task.assert_not_called()
 
     @patch("aqsd.main.run_download_command")
     @patch("aqsd.main.run_search_command")

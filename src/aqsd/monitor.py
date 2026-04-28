@@ -56,7 +56,7 @@ class DownloadMonitor:
             for tag in [value.strip() for value in raw_tags.split(",") if value.strip()]:
                 by_tag[tag] = torrent
 
-        for task in self.db.list_active_tasks():
+        for task in self.db.get_active_tasks():
             task_tag = task["task_tag"]
             torrent = by_tag.get(task_tag)
             if not torrent:
@@ -69,6 +69,7 @@ class DownloadMonitor:
 
             if progress >= 1.0:
                 self.db.update_task_snapshot(task_tag, torrent_hash, progress, speed_kbps, status="completed")
+                self.db.mark_task_completed(task_tag, torrent_hash=torrent_hash)
                 self.db.record_task_event(task_tag, "completed", "Download finished.")
                 continue
 
@@ -82,6 +83,6 @@ class DownloadMonitor:
             )
             if decision.suspicious:
                 details = ",".join(decision.reasons)
-                self.db.mark_task_status(task_tag, "fallback_pending")
+                self.db.update_task_status(task_tag, "fallback_pending", torrent_hash=torrent_hash)
                 self.db.record_task_event(task_tag, "fallback_pending", details)
                 logger.warning("Task {} flagged for fallback: {}", task_tag, details)

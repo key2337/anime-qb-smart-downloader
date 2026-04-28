@@ -32,18 +32,22 @@ def add_best_candidates(qb: QBittorrentClient, db: Database, candidate_pool: dic
             save_path=best.save_path,
             tags=best.task_tag,
         )
-        db.record_task(
+        db.create_download_task(
             DownloadTask(
                 task_tag=best.task_tag,
                 anime_name=best.anime_name or "unknown",
                 episode=best.episode or "00",
                 title=best.title,
                 url=best.url,
+                selection_mode="auto",
+                candidate_score=best.score,
+                source=best.source,
                 category=best.category,
                 save_path=best.save_path,
             )
         )
-        db.mark_downloaded(best)
+        # TODO: submission to qB is not completion. Future fallback logic should
+        # rely on task status transitions instead of treating this as downloaded.
 
 
 def run_once(config: AppConfig, db: Database | None = None, qb: QBittorrentClient | None = None) -> None:

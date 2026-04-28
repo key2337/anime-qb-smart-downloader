@@ -215,3 +215,5 @@ GitHub Actions runs `pytest` on every `push` and `pull_request`.
 - `config.example.yaml` is safe to commit and should not contain real credentials.
 - `config.yaml` is for local use and should not be committed.
 - The repository currently focuses on anime RSS workflows and qBittorrent integration, not on post-download media management.
+- Adding a torrent to qBittorrent creates a download task record first. It is not treated as completed until the monitor sees the torrent finish.
+- Current task states include `queued`, `submitted`, `downloading`, `stalled`, `fallback_pending`, `fallback_submitted`, `completed`, `failed`, and `cancelled`.

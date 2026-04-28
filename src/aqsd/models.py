@@ -55,10 +55,15 @@ class DownloadTask:
     episode: str
     title: str
     url: str
+    selection_mode: str = "auto"
+    candidate_score: float = 0.0
+    source: str | None = None
     category: str | None = None
     save_path: str | None = None
     status: str = "submitted"
     torrent_hash: str | None = None
     retry_count: int = 0
+    fallback_count: int = 0
+    last_error: str | None = None
     last_progress: float = 0.0
     last_speed_kbps: float = 0.0
