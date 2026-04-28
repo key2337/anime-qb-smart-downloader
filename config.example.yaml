@@ -5,8 +5,8 @@ app:
 
 qbittorrent:
   base_url: "http://127.0.0.1:8080"
-  username: "admin"
-  password: "adminadmin"
+  username: "change-me"
+  password: "change-me"
   default_category: "Anime"
   default_save_path: "/downloads/anime"
 
@@ -47,10 +47,8 @@ profiles:
     reject:
       - "CHS"
       - "CHT"
-      - "简中"
-      - "繁中"
-      - "内嵌"
-      - "字幕组"
+      - "embedded"
+      - "external"
     allow_subtitled: false
     allow_fallback: true
 
@@ -64,16 +62,16 @@ profiles:
 anime:
   - name: "Example Anime"
     aliases:
-      - "示例动画"
       - "Example"
+      - "Example Anime S1"
     profile: "fastest"
     include:
       - "1080p"
     reject:
-      - "合集"
       - "Batch"
+      - "Complete"
     prefer_groups:
       - "LoliHouse"
-      - "喵萌奶茶屋"
+      - "SubsPlease"
     save_path: "/downloads/anime/Example Anime"
     category: "Anime"
