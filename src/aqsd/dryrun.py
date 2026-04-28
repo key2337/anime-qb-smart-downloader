@@ -5,10 +5,8 @@ from dataclasses import dataclass
 from loguru import logger
 
 from aqsd.config import AppConfig
-from aqsd.matcher import match_candidate
+from aqsd.discovery import discover_rule_candidates
 from aqsd.models import Candidate
-from aqsd.parser import parse_candidate
-from aqsd.rss import fetch_rss, inspect_rss
 from aqsd.scorer import explain_score_candidate
 
 
@@ -40,47 +38,14 @@ def _filter_latest_only(candidates: list[Candidate]) -> tuple[list[Candidate], t
 def run_dry_run(config: AppConfig, limit: int = 10, latest_only: bool = True) -> DryRunReport:
     rules = config.anime_rules
     rule_by_name = {rule.name: rule for rule in rules}
-
-    rss_entries_total = 0
-    parsed_success_total = 0
-    matched_candidates: list[Candidate] = []
-    seen_urls: set[str] = set()
-
-    for source in config.rss_sources:
-        if not source.enabled:
-            continue
-
-        source_info = inspect_rss(source)
-        rss_entries_total += int(source_info["entries"])
-        logger.info(
-            "Dry-run source: name={} entries={} title={}",
-            source_info["name"],
-            source_info["entries"],
-            source_info["feed_title"] or "-",
-        )
-
-        for item in fetch_rss(source):
-            if item.url in seen_urls:
-                continue
-
-            seen_urls.add(item.url)
-            candidate = parse_candidate(item)
-            if candidate.episode is not None:
-                parsed_success_total += 1
-
-            matched = match_candidate(
-                candidate,
-                rules,
-                config.profiles,
-                config.qb.default_category,
-                config.qb.default_save_path,
-            )
-            if not matched:
-                continue
-
-            rule = rule_by_name[matched.matched_rule_name or ""]
-            profile = config.profiles.get(rule.profile, {})
-            matched_candidates.append(matched)
+    discovery = discover_rule_candidates(
+        config,
+        skip_downloaded=False,
+        persist_candidates=False,
+    )
+    rss_entries_total = discovery.rss_entries_total
+    parsed_success_total = discovery.parsed_success_total
+    matched_candidates = discovery.candidates
 
     matched_total_before_latest_only = len(matched_candidates)
     latest_episode_key: tuple[int, int] | None = None

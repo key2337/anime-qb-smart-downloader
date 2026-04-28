@@ -1,61 +1,23 @@
 from __future__ import annotations
 
-from collections import defaultdict
-
 from loguru import logger
 
 from aqsd.config import AppConfig
 from aqsd.database import Database
-from aqsd.matcher import match_candidate
+from aqsd.discovery import discover_rule_candidates, group_candidates_by_episode
 from aqsd.models import Candidate, DownloadTask
-from aqsd.parser import parse_candidate
 from aqsd.qbittorrent import QBittorrentClient
-from aqsd.rss import fetch_rss
-from aqsd.scorer import score_candidate
 from aqsd.utils import build_task_tag
 
 
 def collect_candidates(config: AppConfig, db: Database) -> dict[tuple[str, str], list[Candidate]]:
-    rules = config.anime_rules
-    rule_by_name = {rule.name: rule for rule in rules}
-    default_category = config.qb.default_category
-    default_save_path = config.qb.default_save_path
-
-    candidate_pool: dict[tuple[str, str], list[Candidate]] = defaultdict(list)
-    seen_urls: set[str] = set()
-
-    for source in config.rss_sources:
-        if not source.enabled:
-            continue
-
-        logger.info("Fetching RSS: {}", source.name)
-        for item in fetch_rss(source):
-            if not item.url or item.url in seen_urls:
-                continue
-
-            seen_urls.add(item.url)
-            candidate = parse_candidate(item)
-            matched = match_candidate(
-                candidate,
-                rules,
-                config.profiles,
-                default_category,
-                default_save_path,
-            )
-            if not matched or not matched.anime_name or not matched.episode:
-                continue
-
-            if db.already_downloaded(matched.anime_name, matched.episode):
-                continue
-
-            rule = rule_by_name[matched.matched_rule_name or ""]
-            profile = config.profiles.get(rule.profile, {})
-            score_candidate(matched, rule, profile)
-            db.save_candidate(matched)
-
-            candidate_pool[(matched.anime_name, matched.episode)].append(matched)
-
-    return candidate_pool
+    discovery = discover_rule_candidates(
+        config,
+        db,
+        skip_downloaded=True,
+        persist_candidates=True,
+    )
+    return group_candidates_by_episode(discovery.candidates)
 
 
 def add_best_candidates(qb: QBittorrentClient, db: Database, candidate_pool: dict[tuple[str, str], list[Candidate]]) -> None:
