@@ -1,0 +1,79 @@
+app:
+  database: "./data/app.db"
+  interval_seconds: 300
+  log_level: "INFO"
+
+qbittorrent:
+  base_url: "http://127.0.0.1:8080"
+  username: "admin"
+  password: "adminadmin"
+  default_category: "Anime"
+  default_save_path: "/downloads/anime"
+
+rss_sources:
+  - name: "mikan"
+    url: "https://example.com/rss.xml"
+    enabled: true
+
+fallback_policy:
+  enabled: true
+  check_after_minutes: 10
+  min_download_speed_kbps: 100
+  min_progress_delta: 0.001
+  max_retry_candidates: 5
+  delete_failed_torrent: true
+
+profiles:
+  fastest:
+    prefer:
+      resolution: ["1080p", "2160p", "720p"]
+      subtitle: "any"
+    allow_fallback: true
+
+  preferred_group:
+    prefer:
+      resolution: ["1080p", "720p"]
+      subtitle: "embedded"
+    allow_other_group: false
+    allow_fallback: true
+    wait_minutes_before_fallback: 60
+
+  raw_only:
+    must_include:
+      - "1080p"
+    prefer:
+      - "RAW"
+      - "WEB-DL"
+    reject:
+      - "CHS"
+      - "CHT"
+      - "简中"
+      - "繁中"
+      - "内嵌"
+      - "字幕组"
+    allow_subtitled: false
+    allow_fallback: true
+
+  quality_first:
+    prefer:
+      resolution: ["2160p", "1080p"]
+      source: ["WEB-DL", "BluRay"]
+    allow_fallback: true
+    wait_minutes_before_fallback: 120
+
+anime:
+  - name: "Example Anime"
+    aliases:
+      - "示例动画"
+      - "Example"
+    profile: "fastest"
+    include:
+      - "1080p"
+    reject:
+      - "合集"
+      - "Batch"
+    prefer_groups:
+      - "LoliHouse"
+      - "喵萌奶茶屋"
+    save_path: "/downloads/anime/Example Anime"
+    category: "Anime"

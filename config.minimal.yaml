@@ -1,0 +1,16 @@
+app:
+  database: "./data/app.db"
+  log_level: "INFO"
+
+qbittorrent:
+  base_url: "http://127.0.0.1:8080"
+  username: "YOUR_QB_USERNAME"
+  password: "YOUR_QB_PASSWORD"
+
+rss_sources:
+  - name: "mikan"
+    url: "https://YOUR_REAL_RSS_URL"
+    enabled: true
+
+profiles: {}
+anime: []
