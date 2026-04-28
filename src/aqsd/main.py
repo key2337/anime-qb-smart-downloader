@@ -6,6 +6,7 @@ import time
 
 from loguru import logger
 
+from aqsd.cli import run_search_command
 from aqsd.config import load_config
 from aqsd.database import Database
 from aqsd.dryrun import run_dry_run
@@ -22,6 +23,33 @@ def build_parser() -> argparse.ArgumentParser:
     mode_group.add_argument("--daemon", action="store_true", help="Run continuously with the configured interval.")
     mode_group.add_argument("--check", action="store_true", help="Verify RSS and qB connectivity only.")
     mode_group.add_argument("--dry-run", action="store_true", help="Run RSS, parsing, matching, and scoring only.")
+    subparsers = parser.add_subparsers(dest="command")
+    search_parser = subparsers.add_parser("search", help="Search RSS candidates without downloading.")
+    search_parser.add_argument("query", help="Anime name to search.")
+    search_parser.add_argument(
+        "--episode",
+        dest="episodes",
+        action="append",
+        default=[],
+        help="Episode to keep. Repeat the flag to include multiple episodes.",
+    )
+    search_parser.add_argument("--resolution", help="Filter by resolution, for example 1080p.")
+    search_parser.add_argument(
+        "--group",
+        dest="groups",
+        action="append",
+        default=[],
+        help="Release group to keep. Repeat the flag to include multiple groups.",
+    )
+    search_parser.add_argument(
+        "--subtitle",
+        choices=["embedded", "external", "none", "unknown", "any"],
+        default="any",
+        help="Filter by subtitle type.",
+    )
+    search_parser.add_argument("--raw-only", action="store_true", help="Only keep RAW / subtitle-free releases.")
+    search_parser.add_argument("--min-seeders", type=int, default=0, help="Minimum seeders required.")
+    search_parser.add_argument("--limit", type=int, default=None, help="Maximum number of results to show.")
     return parser
 
 
@@ -63,6 +91,10 @@ def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args.config)
     configure_logging(config.app.log_level)
+
+    if args.command == "search":
+        run_search_command(args, config)
+        return
 
     if args.check:
         raise SystemExit(0 if check_connections(config) else 1)

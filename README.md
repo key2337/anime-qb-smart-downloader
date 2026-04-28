@@ -113,6 +113,26 @@ Fetch feeds once, select candidates, and submit matching downloads:
 aqsd --config config.yaml
 ```
 
+### Search candidates
+
+Search RSS candidates by anime name without sending anything to qBittorrent:
+
+```bash
+aqsd search "Example Anime"
+```
+
+Filter by episode, resolution, group, subtitle type, and seeder threshold:
+
+```bash
+aqsd search "Example Anime" --episode 01 --resolution 1080p --group LoliHouse --subtitle embedded --min-seeders 5 --limit 10
+```
+
+Show only RAW / subtitle-free candidates:
+
+```bash
+aqsd search "Example Anime" --raw-only
+```
+
 ### Dry-run mode
 
 Inspect RSS entries, parsing, matching, and scoring without adding any torrent:
