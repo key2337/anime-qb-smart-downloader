@@ -60,6 +60,22 @@ CREATE TABLE IF NOT EXISTS task_events (
   details TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS fallback_candidates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL,
+  anime_name TEXT NOT NULL,
+  episode TEXT NOT NULL,
+  candidate_title TEXT NOT NULL,
+  candidate_url TEXT NOT NULL,
+  candidate_score REAL NOT NULL DEFAULT 0,
+  source TEXT,
+  rank INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'unused',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(task_id, candidate_url)
+);
 """
 
 
@@ -138,8 +154,8 @@ class Database:
         )
         self.conn.commit()
 
-    def create_download_task(self, task: DownloadTask) -> None:
-        self.conn.execute(
+    def create_download_task(self, task: DownloadTask) -> int:
+        cursor = self.conn.execute(
             """
             INSERT OR REPLACE INTO download_tasks(
                 task_tag,
@@ -188,9 +204,10 @@ class Database:
             ),
         )
         self.conn.commit()
+        return int(cursor.lastrowid)
 
-    def record_task(self, task: DownloadTask) -> None:
-        self.create_download_task(task)
+    def record_task(self, task: DownloadTask) -> int:
+        return self.create_download_task(task)
 
     def get_active_tasks(self) -> list[sqlite3.Row]:
         placeholders = ", ".join("?" for _ in ACTIVE_TASK_STATUSES)
@@ -281,6 +298,78 @@ class Database:
 
     def mark_task_failed(self, task_tag: str, error: str) -> None:
         self.update_task_status(task_tag, "failed", last_error=error)
+
+    def save_fallback_candidates(self, task_id: int, candidates: list[Candidate]) -> None:
+        existing_urls = {
+            row["candidate_url"]
+            for row in self.conn.execute(
+                "SELECT candidate_url FROM fallback_candidates WHERE task_id = ?",
+                (task_id,),
+            ).fetchall()
+        }
+        current_max_rank = self.conn.execute(
+            "SELECT COALESCE(MAX(rank), 0) AS max_rank FROM fallback_candidates WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()["max_rank"]
+        ranked_candidates = sorted(candidates, key=lambda item: (item.score, item.seeders, item.title), reverse=True)
+
+        next_rank = int(current_max_rank)
+        for candidate in ranked_candidates:
+            if candidate.url in existing_urls:
+                continue
+            next_rank += 1
+            self.conn.execute(
+                """
+                INSERT OR IGNORE INTO fallback_candidates(
+                    task_id,
+                    anime_name,
+                    episode,
+                    candidate_title,
+                    candidate_url,
+                    candidate_score,
+                    source,
+                    rank,
+                    status,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unused', CURRENT_TIMESTAMP)
+                """,
+                (
+                    task_id,
+                    candidate.anime_name or "unknown",
+                    candidate.episode or "00",
+                    candidate.title,
+                    candidate.url,
+                    candidate.score,
+                    candidate.source,
+                    next_rank,
+                ),
+            )
+            existing_urls.add(candidate.url)
+        self.conn.commit()
+
+    def get_next_fallback_candidate(self, task_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM fallback_candidates
+            WHERE task_id = ? AND status = 'unused'
+            ORDER BY rank ASC, id ASC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+
+    def mark_fallback_candidate_status(self, candidate_id: int, status: str) -> None:
+        self.conn.execute(
+            """
+            UPDATE fallback_candidates
+            SET status = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, candidate_id),
+        )
+        self.conn.commit()
 
     def record_task_event(self, task_tag: str, event_type: str, details: str) -> None:
         self.conn.execute(

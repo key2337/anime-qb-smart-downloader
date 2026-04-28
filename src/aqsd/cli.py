@@ -57,7 +57,7 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
             save_path=best.save_path,
             tags=best.task_tag,
         )
-        db.create_download_task(
+        task_id = db.create_download_task(
             DownloadTask(
                 task_tag=best.task_tag,
                 anime_name=best.anime_name or request.query,
@@ -72,6 +72,8 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
                 status="submitted",
             )
         )
+        fallback_candidates = [candidate for candidate in result.candidates if candidate.url != best.url]
+        db.save_fallback_candidates(task_id, fallback_candidates)
     except Exception as exc:
         logger.error("Failed to add torrent to qBittorrent: {}", exc)
         print(f"Failed to add torrent: {exc}", file=stream)

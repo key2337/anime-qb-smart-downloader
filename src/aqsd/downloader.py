@@ -22,7 +22,8 @@ def collect_candidates(config: AppConfig, db: Database) -> dict[tuple[str, str],
 
 def add_best_candidates(qb: QBittorrentClient, db: Database, candidate_pool: dict[tuple[str, str], list[Candidate]]) -> None:
     for (_, _), candidates in candidate_pool.items():
-        best = max(candidates, key=lambda item: (item.score, item.seeders))
+        ranked_candidates = sorted(candidates, key=lambda item: (item.score, item.seeders, item.title), reverse=True)
+        best = ranked_candidates[0]
         best.task_tag = build_task_tag(best.anime_name or "anime", best.episode or "00")
 
         logger.info("Adding torrent: {} score={}", best.title, best.score)
@@ -32,7 +33,7 @@ def add_best_candidates(qb: QBittorrentClient, db: Database, candidate_pool: dic
             save_path=best.save_path,
             tags=best.task_tag,
         )
-        db.create_download_task(
+        task_id = db.create_download_task(
             DownloadTask(
                 task_tag=best.task_tag,
                 anime_name=best.anime_name or "unknown",
@@ -46,6 +47,7 @@ def add_best_candidates(qb: QBittorrentClient, db: Database, candidate_pool: dic
                 save_path=best.save_path,
             )
         )
+        db.save_fallback_candidates(task_id, ranked_candidates[1:])
         # TODO: submission to qB is not completion. Future fallback logic should
         # rely on task status transitions instead of treating this as downloaded.
 

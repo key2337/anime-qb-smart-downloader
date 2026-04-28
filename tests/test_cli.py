@@ -172,6 +172,7 @@ class SearchCliTests(unittest.TestCase):
         )
         mock_discover_search_candidates.return_value = DiscoveryResult(candidates=[worse, better])
         mock_db = mock_database_cls.return_value
+        mock_db.create_download_task.return_value = 123
         mock_qb = mock_qb_cls.return_value
         output = io.StringIO()
         args = Namespace(
@@ -203,6 +204,7 @@ class SearchCliTests(unittest.TestCase):
         self.assertEqual(recorded_task.source, better.source)
         self.assertEqual(recorded_task.status, "submitted")
         self.assertNotIn(recorded_task.status, {"completed", "done"})
+        mock_db.save_fallback_candidates.assert_called_once_with(123, [worse])
         self.assertIn("Added torrent:", output.getvalue())
 
     @patch("aqsd.cli.QBittorrentClient")
@@ -277,6 +279,7 @@ class SearchCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("Failed to add torrent: boom", output.getvalue())
         mock_db.create_download_task.assert_not_called()
+        mock_db.save_fallback_candidates.assert_not_called()
 
     @patch("aqsd.main.run_download_command")
     @patch("aqsd.main.run_search_command")

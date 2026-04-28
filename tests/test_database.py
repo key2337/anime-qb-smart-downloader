@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from aqsd.database import Database
-from aqsd.models import DownloadTask
+from aqsd.models import Candidate, DownloadTask
 
 
 LEGACY_SCHEMA = """
@@ -144,6 +144,89 @@ class DatabaseTests(unittest.TestCase):
                 self.assertEqual(failed["status"], "failed")
                 self.assertEqual(failed["last_error"], "network timeout")
                 self.assertFalse(db.already_downloaded("Example Anime", "02"))
+            finally:
+                db.close()
+        finally:
+            db_path.unlink(missing_ok=True)
+            wal_path = db_path.with_suffix(db_path.suffix + "-wal")
+            shm_path = db_path.with_suffix(db_path.suffix + "-shm")
+            wal_path.unlink(missing_ok=True)
+            shm_path.unlink(missing_ok=True)
+
+    def test_fallback_candidate_methods_rank_skip_duplicates_and_update_status(self) -> None:
+        db_path = self._make_db_path()
+        try:
+            db = Database(str(db_path))
+            try:
+                task_id = db.create_download_task(
+                    DownloadTask(
+                        task_tag="task-fallback",
+                        anime_name="Example Anime",
+                        episode="01",
+                        title="best candidate",
+                        url="https://example.test/best",
+                        status="submitted",
+                    )
+                )
+                candidates = [
+                    Candidate(
+                        title="second choice",
+                        url="https://example.test/2",
+                        source="mock",
+                        anime_name="Example Anime",
+                        episode="01",
+                        score=90.0,
+                        seeders=20,
+                    ),
+                    Candidate(
+                        title="third choice",
+                        url="https://example.test/3",
+                        source="mock",
+                        anime_name="Example Anime",
+                        episode="01",
+                        score=80.0,
+                        seeders=30,
+                    ),
+                    Candidate(
+                        title="duplicate second choice",
+                        url="https://example.test/2",
+                        source="mock",
+                        anime_name="Example Anime",
+                        episode="01",
+                        score=70.0,
+                        seeders=5,
+                    ),
+                ]
+
+                db.save_fallback_candidates(task_id, candidates)
+                db.save_fallback_candidates(task_id, candidates)
+
+                rows = db.conn.execute(
+                    """
+                    SELECT candidate_title, candidate_url, rank, status
+                    FROM fallback_candidates
+                    WHERE task_id = ?
+                    ORDER BY rank ASC, id ASC
+                    """,
+                    (task_id,),
+                ).fetchall()
+                self.assertEqual(len(rows), 2)
+                self.assertEqual(rows[0]["candidate_title"], "second choice")
+                self.assertEqual(rows[0]["candidate_url"], "https://example.test/2")
+                self.assertEqual(rows[0]["rank"], 1)
+                self.assertEqual(rows[1]["candidate_title"], "third choice")
+                self.assertEqual(rows[1]["rank"], 2)
+
+                next_candidate = db.get_next_fallback_candidate(task_id)
+                self.assertEqual(next_candidate["candidate_url"], "https://example.test/2")
+                db.mark_fallback_candidate_status(next_candidate["id"], "used")
+
+                after_used = db.get_next_fallback_candidate(task_id)
+                self.assertEqual(after_used["candidate_url"], "https://example.test/3")
+                db.mark_fallback_candidate_status(after_used["id"], "failed")
+
+                no_more = db.get_next_fallback_candidate(task_id)
+                self.assertIsNone(no_more)
             finally:
                 db.close()
         finally:
