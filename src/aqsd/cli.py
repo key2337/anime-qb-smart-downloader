@@ -13,7 +13,12 @@ from aqsd.database import Database
 from aqsd.models import Candidate, DownloadTask
 from aqsd.probe import probe_candidates
 from aqsd.qbittorrent import QBittorrentClient
+from aqsd.scorer import render_score_reason
 from aqsd.utils import build_task_tag
+
+
+MAX_REASON_CANDIDATES = 5
+MAX_REASON_LINES = 3
 
 
 def run_search_command(args: argparse.Namespace, config: AppConfig, out: TextIO | None = None) -> int:
@@ -28,6 +33,9 @@ def run_search_command(args: argparse.Namespace, config: AppConfig, out: TextIO 
     print(_build_header(), file=stream)
     for index, candidate in enumerate(result.candidates, start=1):
         print(_format_candidate_row(index, candidate), file=stream)
+    print("", file=stream)
+    for index, candidate in enumerate(result.candidates[:MAX_REASON_CANDIDATES], start=1):
+        _print_candidate_breakdown(stream, candidate, index=index)
     return 0
 
 
@@ -40,6 +48,15 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
         print("No candidates found for download.", file=stream)
         return 1
 
+    ranked_candidates = sorted(result.candidates, key=lambda item: (item.score, item.seeders), reverse=True)
+    best = ranked_candidates[0]
+    best.task_tag = best.task_tag or build_task_tag(best.anime_name or request.query or "anime", best.episode or "00")
+
+    if getattr(args, "dry_run", False):
+        _print_candidate_breakdown(stream, best, heading="Selected candidate")
+        print("Dry-run only: not adding torrent.", file=stream)
+        return 0
+
     db = Database(config.app.database)
     qb = QBittorrentClient(
         base_url=config.qb.base_url,
@@ -49,8 +66,6 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
 
     try:
         qb.login()
-        ranked_candidates = sorted(result.candidates, key=lambda item: (item.score, item.seeders), reverse=True)
-        best = ranked_candidates[0]
         already_submitted = False
 
         if getattr(args, "probe", False) or config.probe_policy.enabled:
@@ -60,8 +75,7 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
                 best.task_tag = probe_result.selected_tag
                 already_submitted = True
 
-        if not best.task_tag:
-            best.task_tag = build_task_tag(best.anime_name or request.query or "anime", best.episode or "00")
+        _print_candidate_breakdown(stream, best, heading="Selected candidate")
 
         if not already_submitted:
             qb.add_torrent(
@@ -169,3 +183,27 @@ def _format_datetime(value: datetime | None) -> str:
     if value is None:
         return "-"
     return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _print_candidate_breakdown(
+    stream: TextIO,
+    candidate: Candidate,
+    *,
+    heading: str | None = None,
+    index: int | None = None,
+) -> None:
+    if heading:
+        print(f"{heading}:", file=stream)
+    elif index is not None:
+        print(f"#{index} {candidate.title}", file=stream)
+    else:
+        print(candidate.title, file=stream)
+
+    if heading:
+        print(candidate.title, file=stream)
+    print(f"Score: {candidate.score:.1f}", file=stream)
+    if candidate.breakdown and candidate.breakdown.reasons:
+        print("Reasons:", file=stream)
+        for reason in candidate.breakdown.reasons[:MAX_REASON_LINES]:
+            print(f"  {render_score_reason(reason)}", file=stream)
+    print("", file=stream)

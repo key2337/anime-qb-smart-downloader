@@ -3,8 +3,8 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from aqsd.models import AnimeRule, Candidate
-from aqsd.scorer import score_candidate
+from aqsd.models import AnimeRule, Candidate, ScoreBreakdown, ScoreReason
+from aqsd.scorer import explain_score_candidate, score_candidate
 
 
 class ScorerTests(unittest.TestCase):
@@ -72,6 +72,50 @@ class ScorerTests(unittest.TestCase):
         batch_score = score_candidate(batch, self.rule, profile, now=self.now)
 
         self.assertGreater(normal_score, batch_score)
+
+    def test_score_reason_and_breakdown_can_be_constructed(self) -> None:
+        reason = ScoreReason(code="title_match", delta=25.0, message="title matched: Example Anime")
+        breakdown = ScoreBreakdown(total=25.0, reasons=[reason])
+
+        self.assertEqual(breakdown.total, 25.0)
+        self.assertEqual(breakdown.reasons[0].code, "title_match")
+        self.assertEqual(breakdown.reasons[0].message, "title matched: Example Anime")
+
+    def test_explain_score_candidate_populates_breakdown_and_total_matches_score(self) -> None:
+        candidate = Candidate(
+            title="[LoliHouse] Example Anime - 01 [1080p][CHS]",
+            url="https://example.test/10",
+            source="mock",
+            group="LoliHouse",
+            resolution="1080p",
+            subtitle_type="embedded",
+            episode="01",
+            seeders=12,
+            published_at=self.now - timedelta(hours=2),
+        )
+
+        score, breakdown = explain_score_candidate(
+            candidate,
+            self.rule,
+            {"prefer": {"resolution": ["1080p"], "subtitle": "embedded"}},
+            now=self.now,
+            search_context={
+                "query": "Example Anime",
+                "expanded_queries": ["Example Anime", "Example"],
+                "episodes": {"01"},
+                "resolution": "1080p",
+                "groups": ["LoliHouse"],
+                "subtitle_type": "embedded",
+                "raw_only": False,
+                "min_seeders": 5,
+            },
+        )
+
+        self.assertIs(candidate.breakdown, breakdown)
+        self.assertEqual(candidate.score, score)
+        self.assertEqual(candidate.breakdown.total, candidate.score)
+        self.assertTrue(candidate.breakdown.reasons)
+        self.assertIn("title matched", candidate.score_reasons[0])
 
 
 if __name__ == "__main__":

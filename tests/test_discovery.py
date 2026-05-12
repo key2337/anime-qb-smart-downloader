@@ -286,6 +286,8 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.candidates[0].episode, "01")
         self.assertEqual(result.candidates[0].anime_name, "Example Anime")
         self.assertGreater(result.candidates[0].score, 0.0)
+        self.assertIsNotNone(result.candidates[0].breakdown)
+        self.assertEqual(result.candidates[0].breakdown.total, result.candidates[0].score)
 
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_search_candidates_filters_by_episode(self, mock_fetch_rss) -> None:

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from aqsd.cli import build_search_request, run_download_command, run_resolve_title_command, run_search_command
 from aqsd.config import AppConfig
 from aqsd.discovery import DiscoveryResult
-from aqsd.models import Candidate
+from aqsd.models import Candidate, ScoreBreakdown, ScoreReason
 from aqsd.probe import ProbeResult
 from aqsd.title_resolver import TitleResolution
 
@@ -48,6 +48,11 @@ def _build_alias_config() -> AppConfig:
 
 
 class SearchCliTests(unittest.TestCase):
+    @staticmethod
+    def _build_breakdown(*messages: tuple[str, float, str]) -> ScoreBreakdown:
+        reasons = [ScoreReason(code=code, delta=delta, message=message) for code, delta, message in messages]
+        return ScoreBreakdown(total=sum(reason.delta for reason in reasons), reasons=reasons)
+
     def test_build_search_request_maps_cli_arguments(self) -> None:
         args = Namespace(
             query="Example Anime",
@@ -101,6 +106,10 @@ class SearchCliTests(unittest.TestCase):
                     subtitle_type="embedded",
                     seeders=12,
                     score=123.4,
+                    breakdown=self._build_breakdown(
+                        ("title_match", 25.0, "title matched: Example Anime"),
+                        ("episode_match", 20.0, "episode matched: 01"),
+                    ),
                     published_at=datetime(2026, 4, 28, 9, 30, tzinfo=timezone.utc),
                 )
             ]
@@ -123,6 +132,8 @@ class SearchCliTests(unittest.TestCase):
         self.assertIn("#\ttitle\tepisode\tresolution\tgroup\tsubtitle\tseeders\tpublished_at\tscore\tsource", rendered)
         self.assertIn("[LoliHouse] Example Anime - 01 [1080p][CHS]", rendered)
         self.assertIn("\t01\t1080p\tLoliHouse\tembedded\t12\t2026-04-28 09:30:00\t123.4\tmock", rendered)
+        self.assertIn("Reasons:", rendered)
+        self.assertIn("+25 title matched: Example Anime", rendered)
         mock_discover_search_candidates.assert_called_once()
 
     @patch("aqsd.cli.resolve_search_title")
@@ -248,6 +259,10 @@ class SearchCliTests(unittest.TestCase):
             save_path="/downloads/anime",
             seeders=8,
             score=120.0,
+            breakdown=self._build_breakdown(
+                ("title_match", 25.0, "title matched: Example Anime"),
+                ("episode_match", 20.0, "episode matched: 01"),
+            ),
         )
         worse = Candidate(
             title="[Other] Example Anime - 01 [1080p][CHS]",
@@ -259,6 +274,7 @@ class SearchCliTests(unittest.TestCase):
             save_path="/downloads/anime",
             seeders=50,
             score=80.0,
+            breakdown=self._build_breakdown(("title_match", 25.0, "title matched: Example Anime")),
         )
         mock_discover_search_candidates.return_value = DiscoveryResult(candidates=[worse, better])
         mock_db = mock_database_cls.return_value
@@ -295,6 +311,8 @@ class SearchCliTests(unittest.TestCase):
         self.assertEqual(recorded_task.status, "submitted")
         self.assertNotIn(recorded_task.status, {"completed", "done"})
         mock_db.save_fallback_candidates.assert_called_once_with(123, [worse])
+        self.assertIn("Selected candidate:", output.getvalue())
+        self.assertIn("+20 episode matched: 01", output.getvalue())
         self.assertIn("Added torrent:", output.getvalue())
 
     @patch("aqsd.cli.QBittorrentClient")
@@ -346,6 +364,7 @@ class SearchCliTests(unittest.TestCase):
                     category="Anime",
                     save_path="/downloads/anime",
                     score=100.0,
+                    breakdown=self._build_breakdown(("title_match", 25.0, "title matched: Example Anime")),
                 )
             ]
         )
@@ -470,6 +489,49 @@ class SearchCliTests(unittest.TestCase):
             save_path=better.save_path,
             tags=better.task_tag,
         )
+
+    @patch("aqsd.cli.discover_search_candidates")
+    def test_run_download_command_dry_run_displays_selected_candidate_reasons(self, mock_discover_search_candidates) -> None:
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[
+                Candidate(
+                    title="[LoliHouse] Example Anime - 01 [1080p][CHS]",
+                    url="https://example.test/1",
+                    source="mock",
+                    episode="01",
+                    anime_name="Example Anime",
+                    category="Anime",
+                    save_path="/downloads/anime",
+                    score=120.0,
+                    breakdown=self._build_breakdown(
+                        ("title_match", 25.0, "title matched: Example Anime"),
+                        ("resolution_match", 15.0, "resolution matched: 1080p"),
+                    ),
+                )
+            ]
+        )
+        args = Namespace(
+            query="Example Anime",
+            episodes=["01"],
+            resolution="1080p",
+            groups=[],
+            subtitle="any",
+            raw_only=False,
+            min_seeders=0,
+            limit=None,
+            probe=False,
+            dry_run=True,
+        )
+        output = io.StringIO()
+
+        exit_code = run_download_command(args, _build_config(), out=output)
+
+        self.assertEqual(exit_code, 0)
+        rendered = output.getvalue()
+        self.assertIn("Selected candidate:", rendered)
+        self.assertIn("Score: 120.0", rendered)
+        self.assertIn("+15 resolution matched: 1080p", rendered)
+        self.assertIn("Dry-run only: not adding torrent.", rendered)
 
     @patch("aqsd.cli.QBittorrentClient")
     @patch("aqsd.cli.Database")

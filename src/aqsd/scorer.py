@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from aqsd.models import AnimeRule, Candidate
+from aqsd.models import AnimeRule, Candidate, ScoreBreakdown, ScoreReason
+from aqsd.utils import contains_search_keyword, normalize_text
 
 
 GROUP_PREFERENCE_BASE = 240.0
@@ -83,72 +84,134 @@ def _candidate_episode_key(candidate: Candidate) -> tuple[int, int]:
     return season, episode
 
 
+def _add_reason(breakdown: ScoreBreakdown, code: str, delta: float, message: str) -> None:
+    breakdown.total += delta
+    breakdown.reasons.append(ScoreReason(code=code, delta=delta, message=message))
+
+
+def _format_score_value(value: float) -> str:
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return str(int(rounded))
+    return f"{value:.1f}".rstrip("0").rstrip(".")
+
+
+def render_score_reason(reason: ScoreReason) -> str:
+    return f"{reason.delta:+.1f}".rstrip("0").rstrip(".") + f" {reason.message}"
+
+
+def _apply_search_request_reasons(
+    breakdown: ScoreBreakdown,
+    candidate: Candidate,
+    search_context: dict[str, Any],
+) -> None:
+    query = str(search_context.get("query") or "").strip()
+    expanded_queries = [str(value) for value in search_context.get("expanded_queries", []) if str(value).strip()]
+    searchable_title = candidate.parsed_title or candidate.title
+    matched_query = next((value for value in expanded_queries if contains_search_keyword(searchable_title, value)), None)
+    if not matched_query and query and contains_search_keyword(searchable_title, query):
+        matched_query = query
+
+    if matched_query:
+        if query and normalize_text(matched_query) != normalize_text(query):
+            _add_reason(
+                breakdown,
+                "title_expanded_query_match",
+                25.0,
+                f"title matched via expanded query: {matched_query}",
+            )
+        else:
+            _add_reason(breakdown, "title_match", 25.0, f"title matched: {matched_query}")
+
+    if candidate.episode and candidate.episode in set(search_context.get("episodes", [])):
+        _add_reason(breakdown, "episode_match", 20.0, f"episode matched: {candidate.episode}")
+
+    requested_resolution = str(search_context.get("resolution") or "").strip()
+    if requested_resolution and candidate.resolution and candidate.resolution.casefold() == requested_resolution.casefold():
+        _add_reason(breakdown, "resolution_match", 15.0, f"resolution matched: {candidate.resolution}")
+
+    requested_subtitle = str(search_context.get("subtitle_type") or "").strip()
+    if requested_subtitle and candidate.subtitle_type and candidate.subtitle_type.casefold() == requested_subtitle.casefold():
+        _add_reason(breakdown, "subtitle_match", 8.0, f"subtitle matched: {candidate.subtitle_type}")
+
+    requested_groups = [str(value) for value in search_context.get("groups", []) if str(value).strip()]
+    if requested_groups and candidate.group and any(normalize_text(value) == normalize_text(candidate.group) for value in requested_groups):
+        _add_reason(breakdown, "group_match", 10.0, f"requested group matched: {candidate.group}")
+
+    if search_context.get("raw_only") and candidate.is_raw:
+        _add_reason(breakdown, "raw_match", 12.0, "RAW-only filter matched")
+
+    min_seeders = int(search_context.get("min_seeders") or 0)
+    if min_seeders > 0 and candidate.seeders >= min_seeders:
+        _add_reason(breakdown, "min_seeders_match", 5.0, f"meets minimum seeders: {candidate.seeders}")
+
+
 def explain_score_candidate(
     candidate: Candidate,
     rule: AnimeRule,
     profile: dict[str, Any],
     now: datetime | None = None,
     latest_episode_key: tuple[int, int] | None = None,
-) -> tuple[float, list[str]]:
-    reasons: list[str] = []
-    score = 0.0
+    search_context: dict[str, Any] | None = None,
+) -> tuple[float, ScoreBreakdown]:
+    breakdown = ScoreBreakdown()
     current_time = now or _utc_now()
 
+    if search_context:
+        _apply_search_request_reasons(breakdown, candidate, search_context)
+
     seeder_score = _score_seeders(candidate)
-    score += seeder_score
-    reasons.append(f"seeders: +{seeder_score:.1f} (capped from {candidate.seeders})")
+    _add_reason(breakdown, "seeders", seeder_score, f"seeders: {candidate.seeders}")
 
     freshness_score, age_hours = _score_freshness(candidate, current_time)
     if age_hours is not None:
-        score += freshness_score
-        reasons.append(f"freshness: +{freshness_score:.1f} (age {age_hours:.1f}h)")
+        _add_reason(breakdown, "freshness", freshness_score, f"release freshness: age {age_hours:.1f}h")
 
     group_score = _score_group_preference(candidate, rule)
-    score += group_score
     if group_score >= 0:
-        reasons.append(f"release group preference: +{group_score:.1f} ({candidate.group})")
+        _add_reason(breakdown, "preferred_group", group_score, f"preferred group: {candidate.group}")
     else:
-        reasons.append(f"release group penalty: {group_score:.1f} ({candidate.group or 'unknown'})")
+        _add_reason(breakdown, "group_penalty", group_score, f"group penalty: {candidate.group or 'unknown'}")
 
     if latest_episode_key is not None and _candidate_episode_key(candidate) == latest_episode_key:
-        score += LATEST_EPISODE_BONUS
-        reasons.append(
-            f"latest episode bonus: +{LATEST_EPISODE_BONUS:.1f} (S{latest_episode_key[0]:02d}E{latest_episode_key[1]:02d})"
+        _add_reason(
+            breakdown,
+            "latest_episode_bonus",
+            LATEST_EPISODE_BONUS,
+            f"latest episode bonus: S{latest_episode_key[0]:02d}E{latest_episode_key[1]:02d}",
         )
 
     prefer = profile.get("prefer", {})
     if isinstance(prefer, dict):
         resolution_score = _score_ranked_preference(candidate.resolution, prefer.get("resolution", []), base=36)
         if resolution_score:
-            score += resolution_score
-            reasons.append(f"resolution preference: +{resolution_score:.1f} ({candidate.resolution})")
+            _add_reason(breakdown, "preferred_resolution", resolution_score, f"preferred resolution: {candidate.resolution}")
 
         source_score = _score_ranked_preference(candidate.source_type, prefer.get("source", []), base=24)
         if source_score:
-            score += source_score
-            reasons.append(f"source preference: +{source_score:.1f} ({candidate.source_type})")
+            _add_reason(breakdown, "preferred_source", source_score, f"preferred source: {candidate.source_type}")
 
         subtitle_score = _score_subtitle(candidate, prefer)
         if subtitle_score:
-            score += subtitle_score
-            reasons.append(f"subtitle preference: +{subtitle_score:.1f} ({candidate.subtitle_type})")
+            _add_reason(breakdown, "preferred_subtitle", subtitle_score, f"preferred subtitle: {candidate.subtitle_type}")
 
     raw_score = _score_raw_preference(candidate, profile)
     if raw_score:
-        score += raw_score
-        reasons.append(f"raw/source bonus: +{raw_score:.1f}")
+        raw_label = candidate.source_type or ("RAW" if candidate.is_raw else "source")
+        _add_reason(breakdown, "raw_preference", raw_score, f"preferred RAW/source: {raw_label}")
 
     if candidate.is_v2:
-        score += 10.0
-        reasons.append("revision bonus: +10.0 (v2/v3)")
+        _add_reason(breakdown, "revision_bonus", 10.0, "revision bonus: v2/v3")
 
     if candidate.is_batch:
-        score -= 120.0
-        reasons.append("batch penalty: -120.0")
+        _add_reason(breakdown, "batch_penalty", -120.0, "batch penalty")
+    else:
+        _add_reason(breakdown, "single_release_bonus", 6.0, "single release")
 
-    candidate.score = score
-    candidate.score_reasons = reasons
-    return score, reasons
+    candidate.score = breakdown.total
+    candidate.breakdown = breakdown
+    candidate.score_reasons = [render_score_reason(reason) for reason in breakdown.reasons]
+    return breakdown.total, breakdown
 
 
 def score_candidate(
@@ -157,6 +220,14 @@ def score_candidate(
     profile: dict[str, Any],
     now: datetime | None = None,
     latest_episode_key: tuple[int, int] | None = None,
+    search_context: dict[str, Any] | None = None,
 ) -> float:
-    score, _ = explain_score_candidate(candidate, rule, profile, now=now, latest_episode_key=latest_episode_key)
+    score, _ = explain_score_candidate(
+        candidate,
+        rule,
+        profile,
+        now=now,
+        latest_episode_key=latest_episode_key,
+        search_context=search_context,
+    )
     return score

@@ -198,8 +198,62 @@ class MonitorFallbackTests(unittest.TestCase):
 
                 self.assertEqual(task["status"], "fallback_pending")
                 self.assertIn("fallback submit failed", task["last_error"])
+                self.assertIn("qB add failed", task["last_error"])
                 self.assertEqual(fallback["status"], "failed")
                 self.assertEqual(task_count, 1)
+            finally:
+                db.close()
+        finally:
+            self._cleanup_db(db_path)
+
+    def test_fallback_candidate_without_magnet_or_url_is_skipped(self) -> None:
+        db_path = self._make_db_path()
+        try:
+            db = Database(str(db_path))
+            try:
+                task_id = db.create_download_task(
+                    DownloadTask(
+                        task_tag="task-1",
+                        anime_name="Example Anime",
+                        episode="01",
+                        title="stalled candidate",
+                        url="https://example.test/stalled",
+                        selection_mode="auto",
+                        candidate_score=100.0,
+                        source="mock",
+                        category="Anime",
+                        save_path="/downloads/anime",
+                        status="submitted",
+                    )
+                )
+                db.save_fallback_candidates(
+                    task_id,
+                    [
+                        Candidate(
+                            title="fallback candidate",
+                            url="",
+                            source="mock",
+                            anime_name="Example Anime",
+                            episode="01",
+                            score=90.0,
+                        )
+                    ],
+                )
+                qb = FakeQBittorrentClient([self._stalled_torrent()])
+
+                DownloadMonitor(self._make_config(), db, qb).scan()
+
+                task = db.conn.execute(
+                    "SELECT status, last_error FROM download_tasks WHERE task_tag = 'task-1'"
+                ).fetchone()
+                fallback = db.conn.execute(
+                    "SELECT status FROM fallback_candidates WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                self.assertEqual(task["status"], "fallback_pending")
+                self.assertEqual(task["last_error"], "fallback candidate has no magnet or torrent URL")
+                self.assertEqual(fallback["status"], "failed")
+                self.assertEqual(qb.added, [])
             finally:
                 db.close()
         finally:

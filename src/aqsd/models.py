@@ -5,6 +5,19 @@ from datetime import datetime
 
 
 @dataclass(slots=True)
+class ScoreReason:
+    code: str
+    delta: float
+    message: str
+
+
+@dataclass(slots=True)
+class ScoreBreakdown:
+    total: float = 0.0
+    reasons: list[ScoreReason] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class Candidate:
     title: str
     url: str
@@ -28,6 +41,7 @@ class Candidate:
     is_v2: bool = False
 
     score: float = 0.0
+    breakdown: ScoreBreakdown | None = None
     score_reasons: list[str] = field(default_factory=list)
     matched_rule_name: str | None = None
     save_path: str | None = None

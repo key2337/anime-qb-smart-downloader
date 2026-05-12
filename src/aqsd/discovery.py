@@ -299,7 +299,21 @@ def _score_search_candidate(candidate: Candidate, request: SearchRequest, config
     candidate.anime_name = request.query
     candidate.category = config.qb.default_category
     candidate.save_path = config.qb.default_save_path
-    score_candidate(candidate, rule, profile={})
+    score_candidate(
+        candidate,
+        rule,
+        profile={},
+        search_context={
+            "query": request.query,
+            "expanded_queries": request.expanded_queries,
+            "episodes": _normalize_episode_values(request.episodes),
+            "resolution": request.resolution,
+            "groups": request.groups,
+            "subtitle_type": request.subtitle_type,
+            "raw_only": request.raw_only,
+            "min_seeders": request.min_seeders,
+        },
+    )
 
 
 def _normalize_episode_values(values: list[str]) -> set[str]:
@@ -312,6 +326,8 @@ def _normalize_episode_values(values: list[str]) -> set[str]:
         if stripped.isdigit():
             normalized.add(stripped.zfill(2))
     return normalized
+
+
 def _value_in_normalized_set(value: str | None, candidates: list[str]) -> bool:
     if not value:
         return False

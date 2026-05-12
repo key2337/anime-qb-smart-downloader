@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     download_parser.add_argument("query", help="Anime name to search.")
     _add_search_like_arguments(download_parser)
     download_parser.add_argument("--probe", action="store_true", help="Probe top candidates in qB before choosing.")
+    download_parser.add_argument("--dry-run", action="store_true", help="Show the selected candidate without adding it to qBittorrent.")
     return parser
 
 

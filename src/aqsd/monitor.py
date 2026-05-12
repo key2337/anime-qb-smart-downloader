@@ -103,10 +103,32 @@ class DownloadMonitor:
         self.db.mark_fallback_candidate_status(fallback["id"], "used")
         next_fallback_count = int(task["fallback_count"] or 0) + 1
         next_task_tag = build_task_tag(task["anime_name"], task["episode"])
+        candidate_url = (fallback["candidate_url"] or "").strip()
+        magnet_present = candidate_url.casefold().startswith("magnet:")
+        torrent_url_present = bool(candidate_url) and not magnet_present
+        logger.info(
+            "Task {} preparing fallback candidate: task_id={} candidate_id={} title={} source={} magnet_present={} torrent_url_present={} score={}",
+            task_tag,
+            task["id"],
+            fallback["id"],
+            fallback["candidate_title"],
+            fallback["source"] or "-",
+            magnet_present,
+            torrent_url_present,
+            float(fallback["candidate_score"] or 0),
+        )
+
+        if not magnet_present and not torrent_url_present:
+            error = "fallback candidate has no magnet or torrent URL"
+            self.db.mark_fallback_candidate_status(fallback["id"], "failed")
+            self.db.update_task_status(task_tag, "fallback_pending", torrent_hash=torrent_hash, last_error=error)
+            self.db.record_task_event(task_tag, "fallback_failed", error)
+            logger.error("Task {} fallback submit skipped: {}", task_tag, error)
+            return
 
         try:
             self.qb.add_torrent(
-                fallback["candidate_url"],
+                candidate_url,
                 category=task["category"],
                 save_path=task["save_path"],
                 tags=next_task_tag,
