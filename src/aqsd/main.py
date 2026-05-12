@@ -34,6 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_search_like_arguments(download_parser)
     download_parser.add_argument("--probe", action="store_true", help="Probe top candidates in qB before choosing.")
     download_parser.add_argument("--dry-run", action="store_true", help="Show the selected candidate without adding it to qBittorrent.")
+    server_parser = subparsers.add_parser("server", help="Start the local aqsd API server.")
+    server_parser.add_argument("--host", default="127.0.0.1", help="Host to bind. Defaults to 127.0.0.1.")
+    server_parser.add_argument("--port", type=int, default=8765, help="Port to bind. Defaults to 8765.")
     return parser
 
 
@@ -113,6 +116,12 @@ def main() -> None:
 
     if args.command == "download":
         raise SystemExit(run_download_command(args, config))
+        return
+
+    if args.command == "server":
+        from aqsd.api import run_server_command
+
+        raise SystemExit(run_server_command(config, host=args.host, port=args.port))
         return
 
     if args.check:

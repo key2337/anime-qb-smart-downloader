@@ -482,6 +482,7 @@ class SearchCliTests(unittest.TestCase):
 
     @patch("aqsd.main.run_download_command")
     @patch("aqsd.main.run_search_command")
+    @patch("aqsd.api.run_server_command")
     @patch("aqsd.main.run_once")
     @patch("aqsd.main.run_dry_run")
     @patch("aqsd.main.check_connections")
@@ -493,6 +494,7 @@ class SearchCliTests(unittest.TestCase):
         mock_check_connections,
         mock_run_dry_run,
         mock_run_once,
+        mock_run_server_command,
         mock_run_search_command,
         mock_run_download_command,
     ) -> None:
@@ -516,7 +518,43 @@ class SearchCliTests(unittest.TestCase):
         self.assertTrue(called_args.raw_only)
         self.assertTrue(called_args.probe)
         self.assertIs(called_config, config)
+        mock_run_server_command.assert_not_called()
         mock_run_search_command.assert_not_called()
+        mock_run_once.assert_not_called()
+        mock_run_dry_run.assert_not_called()
+        mock_check_connections.assert_not_called()
+
+    @patch("aqsd.main.run_download_command")
+    @patch("aqsd.main.run_search_command")
+    @patch("aqsd.api.run_server_command")
+    @patch("aqsd.main.run_once")
+    @patch("aqsd.main.run_dry_run")
+    @patch("aqsd.main.check_connections")
+    @patch("aqsd.main.load_config")
+    @patch("sys.argv", ["aqsd", "server", "--host", "127.0.0.1", "--port", "8765"])
+    def test_main_dispatches_server_without_running_other_modes(
+        self,
+        mock_load_config,
+        mock_check_connections,
+        mock_run_dry_run,
+        mock_run_once,
+        mock_run_server_command,
+        mock_run_search_command,
+        mock_run_download_command,
+    ) -> None:
+        from aqsd.main import main
+
+        config = _build_config()
+        mock_load_config.return_value = config
+        mock_run_server_command.return_value = 0
+
+        with self.assertRaises(SystemExit) as exc:
+            main()
+
+        self.assertEqual(exc.exception.code, 0)
+        mock_run_server_command.assert_called_once_with(config, host="127.0.0.1", port=8765)
+        mock_run_search_command.assert_not_called()
+        mock_run_download_command.assert_not_called()
         mock_run_once.assert_not_called()
         mock_run_dry_run.assert_not_called()
         mock_check_connections.assert_not_called()
