@@ -23,6 +23,13 @@ fallback_policy:
   max_retry_candidates: 5
   delete_failed_torrent: true
 
+probe_policy:
+  enabled: false
+  max_candidates: 3
+  duration_seconds: 30
+  min_speed_kbps: 50
+  delete_losers: true
+
 profiles:
   fastest:
     prefer:

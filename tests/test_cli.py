@@ -10,6 +10,7 @@ from aqsd.cli import build_search_request, run_download_command, run_search_comm
 from aqsd.config import AppConfig
 from aqsd.discovery import DiscoveryResult
 from aqsd.models import Candidate
+from aqsd.probe import ProbeResult
 
 
 def _build_config() -> AppConfig:
@@ -287,7 +288,7 @@ class SearchCliTests(unittest.TestCase):
     @patch("aqsd.main.run_dry_run")
     @patch("aqsd.main.check_connections")
     @patch("aqsd.main.load_config")
-    @patch("sys.argv", ["aqsd", "download", "Example Anime", "--episode", "01", "--resolution", "1080p", "--group", "LoliHouse", "--subtitle", "embedded", "--raw-only"])
+    @patch("sys.argv", ["aqsd", "download", "Example Anime", "--episode", "01", "--resolution", "1080p", "--group", "LoliHouse", "--subtitle", "embedded", "--raw-only", "--probe"])
     def test_main_dispatches_download_without_running_other_modes(
         self,
         mock_load_config,
@@ -315,11 +316,71 @@ class SearchCliTests(unittest.TestCase):
         self.assertEqual(called_args.groups, ["LoliHouse"])
         self.assertEqual(called_args.subtitle, "embedded")
         self.assertTrue(called_args.raw_only)
+        self.assertTrue(called_args.probe)
         self.assertIs(called_config, config)
         mock_run_search_command.assert_not_called()
         mock_run_once.assert_not_called()
         mock_run_dry_run.assert_not_called()
         mock_check_connections.assert_not_called()
+
+    @patch("aqsd.cli.probe_candidates")
+    @patch("aqsd.cli.QBittorrentClient")
+    @patch("aqsd.cli.Database")
+    @patch("aqsd.cli.discover_search_candidates")
+    def test_run_download_command_falls_back_to_highest_score_when_probe_finds_no_winner(
+        self,
+        mock_discover_search_candidates,
+        mock_database_cls,
+        mock_qb_cls,
+        mock_probe_candidates,
+    ) -> None:
+        better = Candidate(
+            title="[LoliHouse] Example Anime - 01 [1080p][CHS]",
+            url="https://example.test/1",
+            source="mock",
+            episode="01",
+            anime_name="Example Anime",
+            category="Anime",
+            save_path="/downloads/anime",
+            seeders=8,
+            score=120.0,
+        )
+        worse = Candidate(
+            title="[Other] Example Anime - 01 [1080p][CHS]",
+            url="https://example.test/2",
+            source="mock",
+            episode="01",
+            anime_name="Example Anime",
+            category="Anime",
+            save_path="/downloads/anime",
+            seeders=50,
+            score=80.0,
+        )
+        mock_discover_search_candidates.return_value = DiscoveryResult(candidates=[worse, better])
+        mock_probe_candidates.return_value = ProbeResult(selected=None, selected_tag=None, attempts=[], scores={})
+        mock_database_cls.return_value.create_download_task.return_value = 123
+        args = Namespace(
+            query="Example Anime",
+            episodes=["01"],
+            resolution="1080p",
+            groups=[],
+            subtitle="any",
+            raw_only=False,
+            min_seeders=0,
+            limit=None,
+            probe=True,
+        )
+
+        exit_code = run_download_command(args, _build_config(), out=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        mock_probe_candidates.assert_called_once()
+        mock_qb_cls.return_value.add_torrent.assert_called_once_with(
+            better.url,
+            category=better.category,
+            save_path=better.save_path,
+            tags=better.task_tag,
+        )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_search_candidates
 from aqsd.database import Database
 from aqsd.models import Candidate, DownloadTask
+from aqsd.probe import probe_candidates
 from aqsd.qbittorrent import QBittorrentClient
 from aqsd.utils import build_task_tag
 
@@ -39,9 +40,6 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
         print("No candidates found for download.", file=stream)
         return 1
 
-    best = max(result.candidates, key=lambda item: (item.score, item.seeders))
-    best.task_tag = build_task_tag(best.anime_name or request.query or "anime", best.episode or "00")
-
     db = Database(config.app.database)
     qb = QBittorrentClient(
         base_url=config.qb.base_url,
@@ -51,12 +49,27 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
 
     try:
         qb.login()
-        qb.add_torrent(
-            best.url,
-            category=best.category,
-            save_path=best.save_path,
-            tags=best.task_tag,
-        )
+        ranked_candidates = sorted(result.candidates, key=lambda item: (item.score, item.seeders), reverse=True)
+        best = ranked_candidates[0]
+        already_submitted = False
+
+        if getattr(args, "probe", False) or config.probe_policy.enabled:
+            probe_result = probe_candidates(ranked_candidates, qb, config.probe_policy)
+            if probe_result.selected is not None:
+                best = probe_result.selected
+                best.task_tag = probe_result.selected_tag
+                already_submitted = True
+
+        if not best.task_tag:
+            best.task_tag = build_task_tag(best.anime_name or request.query or "anime", best.episode or "00")
+
+        if not already_submitted:
+            qb.add_torrent(
+                best.url,
+                category=best.category,
+                save_path=best.save_path,
+                tags=best.task_tag,
+            )
         task_id = db.create_download_task(
             DownloadTask(
                 task_tag=best.task_tag,
@@ -72,7 +85,7 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
                 status="submitted",
             )
         )
-        fallback_candidates = [candidate for candidate in result.candidates if candidate.url != best.url]
+        fallback_candidates = [candidate for candidate in ranked_candidates if candidate.url != best.url]
         db.save_fallback_candidates(task_id, fallback_candidates)
     except Exception as exc:
         logger.error("Failed to add torrent to qBittorrent: {}", exc)

@@ -12,5 +12,12 @@ rss_sources:
     url: "https://YOUR_REAL_RSS_URL"
     enabled: true
 
+probe_policy:
+  enabled: false
+  max_candidates: 3
+  duration_seconds: 30
+  min_speed_kbps: 50
+  delete_losers: true
+
 profiles: {}
 anime: []

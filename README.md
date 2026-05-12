@@ -76,6 +76,7 @@ The local `config.yaml` is intentionally ignored by Git.
 - `qbittorrent`: Web API endpoint, username, password, default category, default save path
 - `rss_sources`: list of RSS feeds to poll
 - `fallback_policy`: thresholds for suspicious download detection
+- `probe_policy`: optional short qBittorrent probe settings for manual candidate selection
 - `profiles`: reusable matching and preference profiles
 - `anime`: per-show rules, aliases, filters, preferred groups, and output settings
 
@@ -148,6 +149,34 @@ aqsd download "Example Anime" --raw-only --min-seeders 5 --limit 10
 ```
 
 The `download` command only searches within entries visible from your configured `rss_sources`. It does not query external indexers beyond those feeds.
+
+Probe the top candidates in qBittorrent before choosing:
+
+```bash
+aqsd download "Example Anime" --episode 01 --probe
+```
+
+The probe flow temporarily adds the top candidates to qBittorrent, waits for `probe_policy.duration_seconds`, reads real qBittorrent state, and keeps the candidate with the best probe score. The score uses connected seeds, peers, download speed, availability, and progress delta.
+
+`probe_policy` controls the probe behavior:
+
+```yaml
+probe_policy:
+  enabled: false
+  max_candidates: 3
+  duration_seconds: 30
+  min_speed_kbps: 50
+  delete_losers: true
+```
+
+Important probe notes:
+
+- Probe is a small trial download, not a zero-cost health check.
+- `download --probe` enables probing for that manual command. Setting `probe_policy.enabled: true` also enables probing for manual `download`.
+- Automatic one-shot and daemon downloads do not use probe by default.
+- If qBittorrent rejects one probe candidate, the remaining candidates are still tested.
+- If every probe add fails, the command falls back to the original highest-scoring candidate.
+- If `delete_losers` is true, probe losers are deleted from qBittorrent with downloaded data.
 
 ### Dry-run mode
 

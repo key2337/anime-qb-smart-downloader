@@ -38,6 +38,14 @@ class FallbackPolicy(BaseModel):
     delete_failed_torrent: bool = True
 
 
+class ProbePolicy(BaseModel):
+    enabled: bool = False
+    max_candidates: int = 3
+    duration_seconds: int = 30
+    min_speed_kbps: int = 50
+    delete_losers: bool = True
+
+
 class AnimeRuleSettings(BaseModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
@@ -59,6 +67,7 @@ class AppConfig(BaseModel):
     qbittorrent: QBittorrentSettings
     rss_sources: list[RSSSourceSettings] = Field(default_factory=list)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
+    probe_policy: ProbePolicy = Field(default_factory=ProbePolicy)
     profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
     anime: list[AnimeRuleSettings] = Field(default_factory=list)
 
