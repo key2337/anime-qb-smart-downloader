@@ -30,6 +30,17 @@ probe_policy:
   min_speed_kbps: 50
   delete_losers: true
 
+# Local multilingual search aliases for manual search/download.
+title_aliases:
+  - canonical: "一拳超人"
+    aliases:
+      - "一拳超人"
+      - "一击男"
+      - "One Punch Man"
+      - "One-Punch Man"
+      - "Wanpanman"
+      - "ワンパンマン"
+
 profiles:
   fastest:
     prefer:

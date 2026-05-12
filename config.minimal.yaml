@@ -19,5 +19,14 @@ probe_policy:
   min_speed_kbps: 50
   delete_losers: true
 
+# Optional local aliases for multilingual manual search/download.
+# title_aliases:
+#   - canonical: "一拳超人"
+#     aliases:
+#       - "一拳超人"
+#       - "One Punch Man"
+#       - "ワンパンマン"
+title_aliases: []
+
 profiles: {}
 anime: []

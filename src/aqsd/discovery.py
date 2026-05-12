@@ -12,6 +12,7 @@ from aqsd.models import AnimeRule, Candidate
 from aqsd.parser import parse_candidate
 from aqsd.rss import fetch_rss
 from aqsd.scorer import score_candidate
+from aqsd.title_resolver import resolve_title_query
 from aqsd.utils import contains_all_keywords, contains_any_keyword, normalize_text
 
 
@@ -29,6 +30,7 @@ class DiscoveryResult:
 @dataclass(slots=True)
 class SearchRequest:
     query: str
+    expanded_queries: list[str] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
     resolution: str | None = None
     groups: list[str] = field(default_factory=list)
@@ -106,6 +108,9 @@ def discover_rule_candidates(
 def discover_search_candidates(config: AppConfig, request: SearchRequest) -> DiscoveryResult:
     result = DiscoveryResult()
     seen_urls: set[str] = set()
+    resolution = resolve_title_query(request.query, config.title_aliases)
+    if not request.expanded_queries:
+        request.expanded_queries.extend(resolution.expanded_queries)
 
     for source in config.rss_sources:
         if not source.enabled:
@@ -146,7 +151,8 @@ def _matches_search_request(candidate: Candidate, request: SearchRequest) -> boo
         searchable_values = [candidate.title]
         if candidate.parsed_title:
             searchable_values.append(candidate.parsed_title)
-        if not any(contains_any_keyword(value, [request.query]) for value in searchable_values):
+        queries = request.expanded_queries or [request.query]
+        if not any(contains_any_keyword(value, queries) for value in searchable_values):
             return False
 
     if request.episodes and (candidate.episode or "") not in _normalize_episode_values(request.episodes):

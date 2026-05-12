@@ -46,6 +46,11 @@ class ProbePolicy(BaseModel):
     delete_losers: bool = True
 
 
+class TitleAliasSettings(BaseModel):
+    canonical: str
+    aliases: list[str] = Field(default_factory=list)
+
+
 class AnimeRuleSettings(BaseModel):
     name: str
     aliases: list[str] = Field(default_factory=list)
@@ -68,6 +73,7 @@ class AppConfig(BaseModel):
     rss_sources: list[RSSSourceSettings] = Field(default_factory=list)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
     probe_policy: ProbePolicy = Field(default_factory=ProbePolicy)
+    title_aliases: list[TitleAliasSettings] = Field(default_factory=list)
     profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
     anime: list[AnimeRuleSettings] = Field(default_factory=list)
 

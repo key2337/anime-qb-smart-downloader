@@ -77,6 +77,7 @@ The local `config.yaml` is intentionally ignored by Git.
 - `rss_sources`: list of RSS feeds to poll
 - `fallback_policy`: thresholds for suspicious download detection
 - `probe_policy`: optional short qBittorrent probe settings for manual candidate selection
+- `title_aliases`: local multilingual title aliases for manual search and download
 - `profiles`: reusable matching and preference profiles
 - `anime`: per-show rules, aliases, filters, preferred groups, and output settings
 
@@ -149,6 +150,28 @@ aqsd download "Example Anime" --raw-only --min-seeders 5 --limit 10
 ```
 
 The `download` command only searches within entries visible from your configured `rss_sources`. It does not query external indexers beyond those feeds.
+
+### Multilingual title aliases
+
+Manual `search` and `download` can expand a user query through local `title_aliases`. This lets Chinese, English, Japanese, and romanized names point to the same RSS title set.
+
+Example:
+
+```yaml
+title_aliases:
+  - canonical: "一拳超人"
+    aliases:
+      - "一拳超人"
+      - "一击男"
+      - "One Punch Man"
+      - "One-Punch Man"
+      - "Wanpanman"
+      - "ワンパンマン"
+```
+
+With this config, searches for `一拳超人`, `One Punch Man`, `One-Punch Man`, or `ワンパンマン` can match RSS entries containing any alias in the group. Matching is case-insensitive and tolerant of common spacing / hyphen differences such as `One Punch Man` vs `One-Punch Man`.
+
+This first version is local-only. It does not call external title databases, so aliases must be configured before they can be expanded. The automatic anime rule flow still uses the existing `anime.aliases` rules and is not changed by `title_aliases`.
 
 Probe the top candidates in qBittorrent before choosing:
 

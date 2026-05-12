@@ -25,6 +25,27 @@ def _build_config() -> AppConfig:
     )
 
 
+def _build_alias_config() -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "qbittorrent": {
+                "base_url": "http://127.0.0.1:8080",
+                "username": "user",
+                "password": "pass",
+            },
+            "rss_sources": [
+                {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
+            ],
+            "title_aliases": [
+                {
+                    "canonical": "一拳超人",
+                    "aliases": ["一拳超人", "One Punch Man", "One-Punch Man", "ワンパンマン"],
+                }
+            ],
+        }
+    )
+
+
 class SearchCliTests(unittest.TestCase):
     def test_build_search_request_maps_cli_arguments(self) -> None:
         args = Namespace(
@@ -381,6 +402,43 @@ class SearchCliTests(unittest.TestCase):
             save_path=better.save_path,
             tags=better.task_tag,
         )
+
+    @patch("aqsd.cli.QBittorrentClient")
+    @patch("aqsd.cli.Database")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_run_download_command_uses_title_aliases_for_search(
+        self,
+        mock_fetch_rss,
+        mock_database_cls,
+        mock_qb_cls,
+    ) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] One Punch Man - 01 [1080p][CHS]",
+                url="https://example.test/opm-1",
+                source="mock",
+                seeders=5,
+            )
+        ]
+        mock_database_cls.return_value.create_download_task.return_value = 123
+        args = Namespace(
+            query="一拳超人",
+            episodes=[],
+            resolution=None,
+            groups=[],
+            subtitle="any",
+            raw_only=False,
+            min_seeders=0,
+            limit=None,
+            probe=False,
+        )
+
+        exit_code = run_download_command(args, _build_alias_config(), out=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        mock_qb_cls.return_value.add_torrent.assert_called_once()
+        added_url = mock_qb_cls.return_value.add_torrent.call_args.args[0]
+        self.assertEqual(added_url, "https://example.test/opm-1")
 
 
 if __name__ == "__main__":

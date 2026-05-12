@@ -53,6 +53,36 @@ def _build_config() -> AppConfig:
     )
 
 
+def _build_alias_config() -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "qbittorrent": {
+                "base_url": "http://127.0.0.1:8080",
+                "username": "user",
+                "password": "pass",
+                "default_category": "Anime",
+                "default_save_path": "/downloads/anime",
+            },
+            "rss_sources": [
+                {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
+            ],
+            "title_aliases": [
+                {
+                    "canonical": "一拳超人",
+                    "aliases": [
+                        "一拳超人",
+                        "一击男",
+                        "One Punch Man",
+                        "One-Punch Man",
+                        "Wanpanman",
+                        "ワンパンマン",
+                    ],
+                }
+            ],
+        }
+    )
+
+
 class DiscoveryTests(unittest.TestCase):
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_rule_candidates_skips_downloaded_and_persists_matches(self, mock_fetch_rss) -> None:
@@ -264,6 +294,64 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(len(result.candidates), 1)
         self.assertEqual(result.candidates[0].episode, "02")
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_chinese_query_matches_english_title_alias(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] One Punch Man - 01 [1080p][CHS]",
+                url="https://example.test/opm-1",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(_build_alias_config(), SearchRequest(query="一拳超人"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].title, "[SubsPlease] One Punch Man - 01 [1080p][CHS]")
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_english_query_matches_canonical_alias_group(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] ワンパンマン - 01 [1080p][CHS]",
+                url="https://example.test/opm-jp-1",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(_build_alias_config(), SearchRequest(query="One Punch Man"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].title, "[SubsPlease] ワンパンマン - 01 [1080p][CHS]")
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_hyphenated_english_query_matches_space_title(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] One Punch Man - 01 [1080p][CHS]",
+                url="https://example.test/opm-1",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(_build_alias_config(), SearchRequest(query="One-Punch Man"))
+
+        self.assertEqual(len(result.candidates), 1)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_search_without_alias_config_keeps_original_behavior(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] One Punch Man - 01 [1080p][CHS]",
+                url="https://example.test/opm-1",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="一拳超人"))
+
+        self.assertEqual(result.candidates, [])
 
 
 if __name__ == "__main__":
