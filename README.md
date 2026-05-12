@@ -75,6 +75,7 @@ The local `config.yaml` is intentionally ignored by Git.
 - `app`: database path, polling interval, log level
 - `qbittorrent`: Web API endpoint, username, password, default category, default save path
 - `rss_sources`: list of RSS feeds to poll
+- `search_sources`: optional active search providers such as Nyaa for manual search/download
 - `fallback_policy`: thresholds for suspicious download detection
 - `probe_policy`: optional short qBittorrent probe settings for manual candidate selection
 - `title_aliases`: local multilingual title aliases for manual search and download
@@ -149,7 +150,26 @@ Use stricter seeder and RAW-only filters when needed:
 aqsd download "Example Anime" --raw-only --min-seeders 5 --limit 10
 ```
 
-The `download` command only searches within entries visible from your configured `rss_sources`. It does not query external indexers beyond those feeds.
+By default, the `download` command searches entries visible from your configured `rss_sources`. If active search sources are enabled, it can also query those sources.
+
+### RSS and Nyaa search sources
+
+`rss_sources` are best suited for ongoing subscriptions and automatic tracking. The automatic rule flow still only uses configured RSS feeds, so scheduled downloads remain predictable.
+
+Manual `search` and `download` can also use active search sources. Nyaa support can be enabled like this:
+
+```yaml
+search_sources:
+  nyaa:
+    enabled: true
+    base_url: "https://nyaa.si"
+    default_category: "1_2"
+    timeout_seconds: 15
+```
+
+When Nyaa is enabled, manual `search` and `download` merge results from both configured RSS feeds and Nyaa RSS search. The same parsing, title alias expansion, filtering, scoring, sorting, and duplicate removal are applied afterward.
+
+RSS is generally better for following new releases from known feeds. Nyaa active search is useful for manual searches and backfilling older episodes. Nyaa still depends on network reachability and the site's current results, and it does not guarantee that a result has active seeds.
 
 ### Multilingual title aliases
 

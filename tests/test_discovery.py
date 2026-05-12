@@ -83,6 +83,42 @@ def _build_alias_config() -> AppConfig:
     )
 
 
+def _build_nyaa_config() -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "qbittorrent": {
+                "base_url": "http://127.0.0.1:8080",
+                "username": "user",
+                "password": "pass",
+                "default_category": "Anime",
+                "default_save_path": "/downloads/anime",
+            },
+            "rss_sources": [
+                {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
+            ],
+            "search_sources": {
+                "nyaa": {
+                    "enabled": True,
+                    "base_url": "https://nyaa.si",
+                    "default_category": "1_2",
+                    "timeout_seconds": 15,
+                }
+            },
+            "title_aliases": [
+                {
+                    "canonical": "一拳超人",
+                    "aliases": [
+                        "一拳超人",
+                        "One Punch Man",
+                        "One-Punch Man",
+                        "ワンパンマン",
+                    ],
+                }
+            ],
+        }
+    )
+
+
 class DiscoveryTests(unittest.TestCase):
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_rule_candidates_skips_downloaded_and_persists_matches(self, mock_fetch_rss) -> None:
@@ -352,6 +388,87 @@ class DiscoveryTests(unittest.TestCase):
         result = discover_search_candidates(_build_config(), SearchRequest(query="一拳超人"))
 
         self.assertEqual(result.candidates, [])
+
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_search_merges_rss_and_nyaa_results(self, mock_fetch_rss, mock_fetch_nyaa_candidates) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[RSS] Example Anime - 01 [1080p][CHS]",
+                url="https://example.test/rss-1",
+                source="mock",
+                seeders=5,
+            )
+        ]
+        mock_fetch_nyaa_candidates.return_value = [
+            Candidate(
+                title="[Nyaa] Example Anime - 02 [1080p][CHS]",
+                url="https://nyaa.si/view/2",
+                source="nyaa",
+                seeders=20,
+            )
+        ]
+
+        result = discover_search_candidates(_build_nyaa_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual({candidate.url for candidate in result.candidates}, {"https://example.test/rss-1", "https://nyaa.si/view/2"})
+        mock_fetch_nyaa_candidates.assert_called()
+
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_title_alias_expanded_queries_are_used_for_nyaa_search(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+
+        discover_search_candidates(_build_nyaa_config(), SearchRequest(query="一拳超人"))
+
+        called_queries = [call.args[1] for call in mock_fetch_nyaa_candidates.call_args_list]
+        self.assertIn("一拳超人", called_queries)
+        self.assertIn("One Punch Man", called_queries)
+        self.assertIn("One-Punch Man", called_queries)
+        self.assertIn("ワンパンマン", called_queries)
+
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_duplicate_candidates_are_deduplicated_across_rss_and_nyaa(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+    ) -> None:
+        title = "[SubsPlease] Example Anime - 01 [1080p][CHS]"
+        mock_fetch_rss.return_value = [
+            Candidate(title=title, url="https://example.test/rss-1", source="mock", seeders=5)
+        ]
+        mock_fetch_nyaa_candidates.return_value = [
+            Candidate(title=title, url="https://nyaa.si/view/duplicate", source="nyaa", seeders=20)
+        ]
+
+        result = discover_search_candidates(_build_nyaa_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].url, "https://example.test/rss-1")
+
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_nyaa_failure_does_not_block_rss_results(self, mock_fetch_rss, mock_fetch_nyaa_candidates) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[RSS] Example Anime - 01 [1080p][CHS]",
+                url="https://example.test/rss-1",
+                source="mock",
+                seeders=5,
+            )
+        ]
+        mock_fetch_nyaa_candidates.side_effect = RuntimeError("network unavailable")
+
+        result = discover_search_candidates(_build_nyaa_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].url, "https://example.test/rss-1")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,13 @@ rss_sources:
     url: "https://YOUR_REAL_RSS_URL"
     enabled: true
 
+search_sources:
+  nyaa:
+    enabled: false
+    base_url: "https://nyaa.si"
+    default_category: "1_2"
+    timeout_seconds: 15
+
 probe_policy:
   enabled: false
   max_candidates: 3

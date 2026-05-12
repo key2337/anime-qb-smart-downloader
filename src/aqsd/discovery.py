@@ -9,6 +9,7 @@ from aqsd.config import AppConfig
 from aqsd.database import Database
 from aqsd.matcher import match_candidate
 from aqsd.models import AnimeRule, Candidate
+from aqsd.nyaa import fetch_nyaa_candidates
 from aqsd.parser import parse_candidate
 from aqsd.rss import fetch_rss
 from aqsd.scorer import score_candidate
@@ -108,9 +109,10 @@ def discover_rule_candidates(
 def discover_search_candidates(config: AppConfig, request: SearchRequest) -> DiscoveryResult:
     result = DiscoveryResult()
     seen_urls: set[str] = set()
-    resolution = resolve_title_query(request.query, config.title_aliases)
+    seen_title_episodes: set[tuple[str, str]] = set()
+    title_resolution = resolve_title_query(request.query, config.title_aliases)
     if not request.expanded_queries:
-        request.expanded_queries.extend(resolution.expanded_queries)
+        request.expanded_queries.extend(title_resolution.expanded_queries)
 
     for source in config.rss_sources:
         if not source.enabled:
@@ -119,21 +121,34 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
         logger.info("Fetching RSS: {}", source.name)
         items = fetch_rss(source)
         result.rss_entries_total += len(items)
+        _collect_search_matches(
+            items,
+            request,
+            config,
+            result,
+            seen_urls,
+            seen_title_episodes,
+        )
 
-        for item in items:
-            if not item.url or item.url in seen_urls:
+    nyaa_settings = config.search_sources.nyaa
+    if nyaa_settings.enabled:
+        for query in request.expanded_queries or [request.query]:
+            try:
+                logger.info("Searching Nyaa: {}", query)
+                items = fetch_nyaa_candidates(nyaa_settings, query, limit=request.limit)
+            except Exception as exc:
+                logger.warning("Nyaa search failed: query={} error={}", query, exc)
                 continue
 
-            seen_urls.add(item.url)
-            candidate = parse_candidate(item)
-            if candidate.episode is not None:
-                result.parsed_success_total += 1
-
-            if not _matches_search_request(candidate, request):
-                continue
-
-            _score_search_candidate(candidate, request, config)
-            result.candidates.append(candidate)
+            result.rss_entries_total += len(items)
+            _collect_search_matches(
+                items,
+                request,
+                config,
+                result,
+                seen_urls,
+                seen_title_episodes,
+            )
 
     result.candidates = sorted(
         result.candidates,
@@ -144,6 +159,43 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
         result.candidates = result.candidates[: request.limit]
 
     return result
+
+
+def _collect_search_matches(
+    items: list[Candidate],
+    request: SearchRequest,
+    config: AppConfig,
+    result: DiscoveryResult,
+    seen_urls: set[str],
+    seen_title_episodes: set[tuple[str, str]],
+) -> None:
+    for item in items:
+        if not item.url or item.url in seen_urls:
+            continue
+
+        candidate = parse_candidate(item)
+        duplicate_key = _title_episode_key(candidate)
+        if duplicate_key and duplicate_key in seen_title_episodes:
+            continue
+
+        seen_urls.add(candidate.url)
+        if duplicate_key:
+            seen_title_episodes.add(duplicate_key)
+
+        if candidate.episode is not None:
+            result.parsed_success_total += 1
+
+        if not _matches_search_request(candidate, request):
+            continue
+
+        _score_search_candidate(candidate, request, config)
+        result.candidates.append(candidate)
+
+
+def _title_episode_key(candidate: Candidate) -> tuple[str, str] | None:
+    if not candidate.episode:
+        return None
+    return normalize_text(candidate.title), candidate.episode
 
 
 def _matches_search_request(candidate: Candidate, request: SearchRequest) -> bool:

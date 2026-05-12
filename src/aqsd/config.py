@@ -29,6 +29,17 @@ class RSSSourceSettings(BaseModel):
     enabled: bool = True
 
 
+class NyaaSearchSourceSettings(BaseModel):
+    enabled: bool = False
+    base_url: str = "https://nyaa.si"
+    default_category: str = "1_2"
+    timeout_seconds: int = 15
+
+
+class SearchSourcesSettings(BaseModel):
+    nyaa: NyaaSearchSourceSettings = Field(default_factory=NyaaSearchSourceSettings)
+
+
 class FallbackPolicy(BaseModel):
     enabled: bool = True
     check_after_minutes: int = 10
@@ -71,6 +82,7 @@ class AppConfig(BaseModel):
     app: AppSettings = Field(default_factory=AppSettings)
     qbittorrent: QBittorrentSettings
     rss_sources: list[RSSSourceSettings] = Field(default_factory=list)
+    search_sources: SearchSourcesSettings = Field(default_factory=SearchSourcesSettings)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
     probe_policy: ProbePolicy = Field(default_factory=ProbePolicy)
     title_aliases: list[TitleAliasSettings] = Field(default_factory=list)

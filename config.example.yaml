@@ -15,6 +15,13 @@ rss_sources:
     url: "https://example.com/rss.xml"
     enabled: true
 
+search_sources:
+  nyaa:
+    enabled: true
+    base_url: "https://nyaa.si"
+    default_category: "1_2"
+    timeout_seconds: 15
+
 fallback_policy:
   enabled: true
   check_after_minutes: 10
