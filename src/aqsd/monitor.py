@@ -7,7 +7,9 @@ from loguru import logger
 
 from aqsd.config import AppConfig
 from aqsd.database import Database
+from aqsd.models import DownloadTask
 from aqsd.qbittorrent import QBittorrentClient
+from aqsd.utils import build_task_tag
 
 
 @dataclass(slots=True)
@@ -86,3 +88,66 @@ class DownloadMonitor:
                 self.db.update_task_status(task_tag, "fallback_pending", torrent_hash=torrent_hash)
                 self.db.record_task_event(task_tag, "fallback_pending", details)
                 logger.warning("Task {} flagged for fallback: {}", task_tag, details)
+                self._submit_fallback(task, torrent_hash, details)
+
+    def _submit_fallback(self, task: Any, torrent_hash: str | None, reason: str) -> None:
+        task_tag = task["task_tag"]
+        fallback = self.db.get_next_fallback_candidate(task["id"])
+        if fallback is None:
+            error = "no fallback candidates available"
+            self.db.update_task_status(task_tag, "failed", torrent_hash=torrent_hash, last_error=error)
+            self.db.record_task_event(task_tag, "fallback_failed", error)
+            logger.warning("Task {} failed fallback: {}", task_tag, error)
+            return
+
+        self.db.mark_fallback_candidate_status(fallback["id"], "used")
+        next_fallback_count = int(task["fallback_count"] or 0) + 1
+        next_task_tag = build_task_tag(task["anime_name"], task["episode"])
+
+        try:
+            self.qb.add_torrent(
+                fallback["candidate_url"],
+                category=task["category"],
+                save_path=task["save_path"],
+                tags=next_task_tag,
+            )
+        except Exception as exc:
+            error = f"fallback submit failed: {exc}"
+            self.db.mark_fallback_candidate_status(fallback["id"], "failed")
+            self.db.update_task_status(task_tag, "fallback_pending", torrent_hash=torrent_hash, last_error=error)
+            self.db.record_task_event(task_tag, "fallback_failed", error)
+            logger.error("Task {} fallback submit failed: {}", task_tag, exc)
+            return
+
+        if self.config.fallback_policy.delete_failed_torrent and torrent_hash:
+            try:
+                self.qb.delete_torrent(torrent_hash, delete_files=True)
+            except Exception as exc:
+                logger.warning("Failed to delete old torrent for task {}: {}", task_tag, exc)
+                self.db.record_task_event(task_tag, "fallback_delete_failed", str(exc))
+
+        self.db.update_task_status(
+            task_tag,
+            "fallback_submitted",
+            torrent_hash=torrent_hash,
+            fallback_count=next_fallback_count,
+            last_error=reason,
+        )
+        self.db.create_download_task(
+            DownloadTask(
+                task_tag=next_task_tag,
+                anime_name=task["anime_name"],
+                episode=task["episode"],
+                title=fallback["candidate_title"],
+                url=fallback["candidate_url"],
+                selection_mode=task["selection_mode"],
+                candidate_score=float(fallback["candidate_score"] or 0),
+                source=fallback["source"],
+                category=task["category"],
+                save_path=task["save_path"],
+                status="submitted",
+                fallback_count=next_fallback_count,
+            )
+        )
+        self.db.record_task_event(task_tag, "fallback_submitted", fallback["candidate_url"])
+        logger.info("Task {} submitted fallback candidate {}", task_tag, fallback["candidate_url"])

@@ -2,7 +2,7 @@
 
 `anime-qb-smart-downloader` is a Python command-line tool for fetching anime releases from RSS feeds, parsing release metadata, matching entries against user rules, scoring candidates, and sending the best result to qBittorrent through its Web API.
 
-The current codebase is an MVP with a working download pipeline, local SQLite persistence, a dry-run mode for rule tuning, and a basic monitoring layer for future fallback handling.
+The current codebase is an MVP with a working download pipeline, local SQLite persistence, a dry-run mode for rule tuning, and a minimal automatic fallback flow for stalled downloads.
 
 ## Features
 
@@ -19,8 +19,8 @@ The current codebase is an MVP with a working download pipeline, local SQLite pe
 
 - The main RSS -> parse -> match -> score -> submit flow is implemented.
 - SQLite persistence is implemented.
-- Monitoring can flag suspicious downloads for fallback handling.
-- Automatic fallback switching is not fully implemented yet.
+- Monitoring can flag suspicious downloads and submit the next stored fallback candidate.
+- Fallback handling is intentionally minimal and is not a full retry state machine.
 
 ## Requirements
 
@@ -179,6 +179,20 @@ Run continuously using `app.interval_seconds` as the polling interval:
 aqsd --config config.yaml --daemon
 ```
 
+### Minimal fallback switching
+
+When daemon monitoring sees an active qBittorrent task with low speed, no seeds, or stalled progress, it marks the current task as `fallback_pending` and looks for the next `unused` row in `fallback_candidates`.
+
+If a fallback candidate exists, the monitor marks that candidate as `used`, submits it to qBittorrent, marks the original task as `fallback_submitted`, and creates a new `download_tasks` row with status `submitted`. The new task inherits the original anime name, episode, selection mode, category, and save path, with `fallback_count` incremented by one.
+
+If `fallback_policy.delete_failed_torrent` is `true` and the old task has a known qBittorrent hash, the monitor asks qBittorrent to delete the old torrent and downloaded files after the fallback is submitted. If no fallback candidate is available, the original task becomes `failed` with `last_error` set to `no fallback candidates available`.
+
+Limitations:
+
+- Fallback candidates come only from the pool saved when the original task was created.
+- qBittorrent submission failures do not create a new successful task; the fallback candidate is marked `failed` and the original task keeps a failure reason.
+- This is a minimal replacement loop, not a complex retry scheduler.
+
 ## Project Layout
 
 ```text
@@ -217,4 +231,4 @@ GitHub Actions runs `pytest` on every `push` and `pull_request`.
 - The repository currently focuses on anime RSS workflows and qBittorrent integration, not on post-download media management.
 - Adding a torrent to qBittorrent creates a download task record first. It is not treated as completed until the monitor sees the torrent finish.
 - Current task states include `queued`, `submitted`, `downloading`, `stalled`, `fallback_pending`, `fallback_submitted`, `completed`, `failed`, and `cancelled`.
-- A fallback candidate pool is stored for each task, but automatic torrent switching is not implemented yet.
+- A fallback candidate pool is stored for each task and the daemon can submit the next unused fallback candidate when monitoring marks the current task as suspicious.
