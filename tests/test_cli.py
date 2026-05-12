@@ -9,7 +9,7 @@ from unittest.mock import patch
 from aqsd.cli import build_search_request, run_download_command, run_resolve_title_command, run_search_command
 from aqsd.config import AppConfig
 from aqsd.discovery import DiscoveryResult
-from aqsd.models import Candidate, ScoreBreakdown, ScoreReason
+from aqsd.models import Candidate, ScoreBreakdown, ScoreReason, SearchDiagnostics
 from aqsd.probe import ProbeResult
 from aqsd.title_resolver import TitleResolution
 
@@ -52,6 +52,20 @@ class SearchCliTests(unittest.TestCase):
     def _build_breakdown(*messages: tuple[str, float, str]) -> ScoreBreakdown:
         reasons = [ScoreReason(code=code, delta=delta, message=message) for code, delta, message in messages]
         return ScoreBreakdown(total=sum(reason.delta for reason in reasons), reasons=reasons)
+
+    @staticmethod
+    def _build_diagnostics(**overrides: object) -> SearchDiagnostics:
+        defaults = {
+            "original_query": "Example Anime",
+            "expanded_queries": ["Example Anime", "Example"],
+            "sources": ["RSS", "Nyaa"],
+            "active_filters": {},
+            "candidate_count_before_filter": 0,
+            "candidate_count_after_filter": 0,
+            "suggestions": ['Try running: aqsd resolve-title "Example Anime"'],
+        }
+        defaults.update(overrides)
+        return SearchDiagnostics(**defaults)
 
     def test_build_search_request_maps_cli_arguments(self) -> None:
         args = Namespace(
@@ -135,6 +149,73 @@ class SearchCliTests(unittest.TestCase):
         self.assertIn("Reasons:", rendered)
         self.assertIn("+25 title matched: Example Anime", rendered)
         mock_discover_search_candidates.assert_called_once()
+
+    @patch("aqsd.cli.discover_search_candidates")
+    def test_run_search_command_without_candidates_displays_diagnostics(self, mock_discover_search_candidates) -> None:
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[],
+            diagnostics=self._build_diagnostics(
+                original_query="Angel Beats!",
+                expanded_queries=["Angel Beats!"],
+                sources=["RSS", "Nyaa", "Torznab"],
+                active_filters={"episode": "01", "resolution": "1080p"},
+                suggestions=[
+                    'Try running: aqsd resolve-title "Angel Beats!"',
+                    "Check whether the episode number is correct.",
+                ],
+            ),
+        )
+        args = Namespace(
+            query="Angel Beats!",
+            episodes=["01"],
+            resolution="1080p",
+            groups=[],
+            subtitle="any",
+            raw_only=False,
+            min_seeders=0,
+            limit=None,
+        )
+        output = io.StringIO()
+
+        exit_code = run_search_command(args, _build_config(), out=output)
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("No good candidates found.", rendered)
+        self.assertIn("Tried queries:", rendered)
+        self.assertIn("- Angel Beats!", rendered)
+        self.assertIn("Sources:", rendered)
+        self.assertIn("- Torznab", rendered)
+        self.assertIn("Suggestions:", rendered)
+
+    @patch("aqsd.cli.discover_search_candidates")
+    def test_run_search_command_without_candidates_shows_relax_filter_suggestion(self, mock_discover_search_candidates) -> None:
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[],
+            diagnostics=self._build_diagnostics(
+                active_filters={"group": "LoliHouse", "subtitle": "embedded", "raw_only": True},
+                suggestions=[
+                    "Try removing --group or using a different fansub group.",
+                    "Try relaxing subtitle, RAW, or batch filters.",
+                ],
+            ),
+        )
+        args = Namespace(
+            query="Example Anime",
+            episodes=[],
+            resolution=None,
+            groups=["LoliHouse"],
+            subtitle="embedded",
+            raw_only=True,
+            min_seeders=0,
+            limit=None,
+        )
+        output = io.StringIO()
+
+        run_search_command(args, _build_config(), out=output)
+
+        rendered = output.getvalue()
+        self.assertIn("Try relaxing subtitle, RAW, or batch filters.", rendered)
 
     @patch("aqsd.cli.resolve_search_title")
     def test_run_resolve_title_command_displays_expanded_queries(self, mock_resolve_search_title) -> None:
@@ -324,7 +405,15 @@ class SearchCliTests(unittest.TestCase):
         mock_database_cls,
         mock_qb_cls,
     ) -> None:
-        mock_discover_search_candidates.return_value = DiscoveryResult(candidates=[])
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[],
+            diagnostics=self._build_diagnostics(
+                candidate_count_before_filter=2,
+                candidate_count_after_filter=0,
+                active_filters={"group": "LoliHouse"},
+                suggestions=["Try removing --group or using a different fansub group."],
+            ),
+        )
         output = io.StringIO()
         args = Namespace(
             query="Example Anime",
@@ -340,7 +429,8 @@ class SearchCliTests(unittest.TestCase):
         exit_code = run_download_command(args, _build_config(), out=output)
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("No candidates found for download.", output.getvalue())
+        self.assertIn("No good candidates found.", output.getvalue())
+        self.assertIn("Candidates were found, but all were filtered out.", output.getvalue())
         mock_database_cls.assert_not_called()
         mock_qb_cls.assert_not_called()
 
@@ -532,6 +622,43 @@ class SearchCliTests(unittest.TestCase):
         self.assertIn("Score: 120.0", rendered)
         self.assertIn("+15 resolution matched: 1080p", rendered)
         self.assertIn("Dry-run only: not adding torrent.", rendered)
+
+    @patch("aqsd.cli.discover_search_candidates")
+    def test_run_download_command_dry_run_without_candidates_displays_diagnostics(self, mock_discover_search_candidates) -> None:
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[],
+            diagnostics=self._build_diagnostics(
+                original_query="天使的心跳",
+                expanded_queries=["天使的心跳", "Angel Beats!"],
+                sources=["RSS"],
+                suggestions=[
+                    'Try running: aqsd resolve-title "天使的心跳"',
+                    "Add a local alias in config.yaml.",
+                ],
+            ),
+        )
+        args = Namespace(
+            query="天使的心跳",
+            episodes=[],
+            resolution=None,
+            groups=[],
+            subtitle="any",
+            raw_only=False,
+            min_seeders=0,
+            limit=None,
+            probe=False,
+            dry_run=True,
+        )
+        output = io.StringIO()
+
+        exit_code = run_download_command(args, _build_config(), out=output)
+
+        self.assertEqual(exit_code, 1)
+        rendered = output.getvalue()
+        self.assertIn("No good candidates found.", rendered)
+        self.assertIn("Tried queries:", rendered)
+        self.assertIn("- 天使的心跳", rendered)
+        self.assertIn("Suggestions:", rendered)
 
     @patch("aqsd.cli.QBittorrentClient")
     @patch("aqsd.cli.Database")

@@ -10,7 +10,7 @@ from loguru import logger
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_search_candidates, resolve_search_title
 from aqsd.database import Database
-from aqsd.models import Candidate, DownloadTask
+from aqsd.models import Candidate, DownloadTask, SearchDiagnostics
 from aqsd.probe import probe_candidates
 from aqsd.qbittorrent import QBittorrentClient
 from aqsd.scorer import render_score_reason
@@ -27,7 +27,7 @@ def run_search_command(args: argparse.Namespace, config: AppConfig, out: TextIO 
     result = discover_search_candidates(config, request)
 
     if not result.candidates:
-        print("No candidates found.", file=stream)
+        _print_no_candidates_diagnostics(stream, result.diagnostics)
         return 0
 
     print(_build_header(), file=stream)
@@ -45,7 +45,7 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
     result = discover_search_candidates(config, request)
 
     if not result.candidates:
-        print("No candidates found for download.", file=stream)
+        _print_no_candidates_diagnostics(stream, result.diagnostics)
         return 1
 
     ranked_candidates = sorted(result.candidates, key=lambda item: (item.score, item.seeders), reverse=True)
@@ -207,3 +207,43 @@ def _print_candidate_breakdown(
         for reason in candidate.breakdown.reasons[:MAX_REASON_LINES]:
             print(f"  {render_score_reason(reason)}", file=stream)
     print("", file=stream)
+
+
+def _print_no_candidates_diagnostics(stream: TextIO, diagnostics: SearchDiagnostics | None) -> None:
+    print("No good candidates found.", file=stream)
+    if diagnostics is None:
+        return
+
+    if (
+        diagnostics.candidate_count_before_filter is not None
+        and diagnostics.candidate_count_before_filter > 0
+        and (diagnostics.candidate_count_after_filter or 0) == 0
+    ):
+        print("", file=stream)
+        print("Candidates were found, but all were filtered out.", file=stream)
+
+    print("", file=stream)
+    print("Tried queries:", file=stream)
+    for value in diagnostics.expanded_queries or [diagnostics.original_query]:
+        print(f"- {value}", file=stream)
+
+    print("", file=stream)
+    print("Sources:", file=stream)
+    if diagnostics.sources:
+        for source in diagnostics.sources:
+            print(f"- {source}", file=stream)
+    else:
+        print("- none", file=stream)
+
+    print("", file=stream)
+    print("Active filters:", file=stream)
+    if diagnostics.active_filters:
+        for key, value in diagnostics.active_filters.items():
+            print(f"- {key}: {value}", file=stream)
+    else:
+        print("- none", file=stream)
+
+    print("", file=stream)
+    print("Suggestions:", file=stream)
+    for suggestion in diagnostics.suggestions or [f'Try running: aqsd resolve-title "{diagnostics.original_query}"']:
+        print(f"- {suggestion}", file=stream)

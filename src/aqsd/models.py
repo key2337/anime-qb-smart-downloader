@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -15,6 +16,17 @@ class ScoreReason:
 class ScoreBreakdown:
     total: float = 0.0
     reasons: list[ScoreReason] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class SearchDiagnostics:
+    original_query: str
+    expanded_queries: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    active_filters: dict[str, Any] = field(default_factory=dict)
+    candidate_count_before_filter: int | None = None
+    candidate_count_after_filter: int | None = None
+    suggestions: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)

@@ -8,7 +8,7 @@ from loguru import logger
 from aqsd.config import AppConfig
 from aqsd.database import Database
 from aqsd.matcher import match_candidate
-from aqsd.models import AnimeRule, Candidate
+from aqsd.models import AnimeRule, Candidate, SearchDiagnostics
 from aqsd.nyaa import fetch_nyaa_candidates
 from aqsd.parser import parse_candidate
 from aqsd.rss import fetch_rss
@@ -23,6 +23,7 @@ class DiscoveryResult:
     rss_entries_total: int = 0
     parsed_success_total: int = 0
     candidates: list[Candidate] = field(default_factory=list)
+    diagnostics: SearchDiagnostics | None = None
 
     @property
     def matched_total(self) -> int:
@@ -112,15 +113,23 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     seen_urls: set[str] = set()
     seen_hashes: set[str] = set()
     seen_title_episodes: set[tuple[str, str]] = set()
+    attempted_sources: list[str] = []
     title_resolution = resolve_search_title(config, request.query)
     if not request.expanded_queries:
         request.expanded_queries.extend(title_resolution.expanded_queries)
     logger.info("Search queries expanded: {}", ", ".join(request.expanded_queries or [request.query]))
+    result.diagnostics = SearchDiagnostics(
+        original_query=request.query,
+        expanded_queries=list(request.expanded_queries or [request.query]),
+        active_filters=_build_active_filters(request),
+    )
 
     for source in config.rss_sources:
         if not source.enabled:
             continue
 
+        if "RSS" not in attempted_sources:
+            attempted_sources.append("RSS")
         logger.info("Fetching RSS: {}", source.name)
         items = fetch_rss(source)
         result.rss_entries_total += len(items)
@@ -136,6 +145,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
 
     nyaa_settings = config.search_sources.nyaa
     if nyaa_settings.enabled:
+        attempted_sources.append("Nyaa")
         for query in request.expanded_queries or [request.query]:
             try:
                 logger.info("Searching Nyaa: {}", query)
@@ -157,9 +167,13 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
 
     torznab_settings = config.search_sources.torznab
     if torznab_settings.enabled:
+        attempted_torznab = False
         for endpoint in torznab_settings.endpoints:
             if not endpoint.enabled:
                 continue
+            if not attempted_torznab:
+                attempted_sources.append("Torznab")
+                attempted_torznab = True
             for query in request.expanded_queries or [request.query]:
                 try:
                     logger.info("Searching Torznab: endpoint={} query={}", endpoint.name, query)
@@ -186,6 +200,10 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     )
     if request.limit is not None:
         result.candidates = result.candidates[: request.limit]
+    if result.diagnostics is not None:
+        result.diagnostics.sources = attempted_sources
+        result.diagnostics.candidate_count_after_filter = len(result.candidates)
+        result.diagnostics.suggestions = _build_search_suggestions(result.diagnostics, config)
 
     return result
 
@@ -235,6 +253,10 @@ def _collect_search_matches(
             seen_hashes.add(hash_key)
         if duplicate_key:
             seen_title_episodes.add(duplicate_key)
+        if result.diagnostics and result.diagnostics.candidate_count_before_filter is not None:
+            result.diagnostics.candidate_count_before_filter += 1
+        elif result.diagnostics:
+            result.diagnostics.candidate_count_before_filter = 1
 
         if candidate.episode is not None:
             result.parsed_success_total += 1
@@ -333,3 +355,49 @@ def _value_in_normalized_set(value: str | None, candidates: list[str]) -> bool:
         return False
     normalized_value = normalize_text(value)
     return any(normalize_text(candidate) == normalized_value for candidate in candidates if candidate)
+
+
+def _build_active_filters(request: SearchRequest) -> dict[str, object]:
+    filters: dict[str, object] = {}
+    if request.episodes:
+        filters["episode"] = ", ".join(request.episodes)
+    if request.resolution:
+        filters["resolution"] = request.resolution
+    if request.groups:
+        filters["group"] = ", ".join(request.groups)
+    if request.subtitle_type:
+        filters["subtitle"] = request.subtitle_type
+    if request.raw_only:
+        filters["raw_only"] = True
+    if request.min_seeders > 0:
+        filters["min_seeders"] = request.min_seeders
+    if request.limit is not None:
+        filters["limit"] = request.limit
+    return filters
+
+
+def _build_search_suggestions(diagnostics: SearchDiagnostics, config: AppConfig) -> list[str]:
+    suggestions: list[str] = [f'Try running: aqsd resolve-title "{diagnostics.original_query}"']
+    expanded = diagnostics.expanded_queries or [diagnostics.original_query]
+    if len(expanded) <= 1:
+        suggestions.append("Try a different title alias.")
+        suggestions.append("Add a local alias in config.yaml.")
+
+    if "group" in diagnostics.active_filters:
+        suggestions.append("Try removing --group or using a different fansub group.")
+    if "resolution" in diagnostics.active_filters:
+        suggestions.append("Try a different resolution such as 720p or leaving it unset.")
+    if "episode" in diagnostics.active_filters:
+        suggestions.append("Check whether the episode number is correct.")
+    if any(key in diagnostics.active_filters for key in ("subtitle", "raw_only")):
+        suggestions.append("Try relaxing subtitle, RAW, or batch filters.")
+
+    if not config.search_sources.nyaa.enabled and not config.search_sources.torznab.enabled:
+        suggestions.append("Check search_sources in config.yaml.")
+        suggestions.append("Enable Nyaa or Torznab for active search.")
+
+    deduped: list[str] = []
+    for suggestion in suggestions:
+        if suggestion not in deduped:
+            deduped.append(suggestion)
+    return deduped[:6]

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_rule_candidates, discover_search_candidates
-from aqsd.models import Candidate
+from aqsd.models import Candidate, SearchDiagnostics
 from aqsd.anilist import TitleMetadata
 
 
@@ -217,6 +217,21 @@ def _build_anilist_search_config() -> AppConfig:
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_search_diagnostics_can_be_constructed(self) -> None:
+        diagnostics = SearchDiagnostics(
+            original_query="Angel Beats!",
+            expanded_queries=["Angel Beats!"],
+            sources=["RSS"],
+            active_filters={"episode": "01"},
+            candidate_count_before_filter=3,
+            candidate_count_after_filter=0,
+            suggestions=["Check whether the episode number is correct."],
+        )
+
+        self.assertEqual(diagnostics.original_query, "Angel Beats!")
+        self.assertEqual(diagnostics.sources, ["RSS"])
+        self.assertEqual(diagnostics.active_filters["episode"], "01")
+
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_rule_candidates_skips_downloaded_and_persists_matches(self, mock_fetch_rss) -> None:
         mock_fetch_rss.return_value = [
@@ -856,6 +871,43 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("天使的心跳", called_queries)
         self.assertIn("Angel Beats!", called_queries)
         self.assertIn("エンジェルビーツ", called_queries)
+
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_collects_diagnostics_for_filtered_out_candidates(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] Example Anime - 01 [720p][CHS]",
+                url="https://example.test/1",
+                source="mock",
+                seeders=8,
+            )
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime", resolution="1080p", groups=["LoliHouse"], subtitle_type="embedded"),
+        )
+
+        self.assertEqual(result.candidates, [])
+        self.assertIsNotNone(result.diagnostics)
+        self.assertEqual(result.diagnostics.expanded_queries, ["Example Anime"])
+        self.assertEqual(result.diagnostics.sources, ["RSS"])
+        self.assertEqual(result.diagnostics.candidate_count_before_filter, 1)
+        self.assertEqual(result.diagnostics.candidate_count_after_filter, 0)
+        self.assertEqual(result.diagnostics.active_filters["resolution"], "1080p")
+        self.assertIn("Try removing --group or using a different fansub group.", result.diagnostics.suggestions)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_diagnostics_suggest_enabling_active_search_sources(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = []
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(result.candidates, [])
+        self.assertIsNotNone(result.diagnostics)
+        self.assertIn("RSS", result.diagnostics.sources)
+        self.assertIn("Enable Nyaa or Torznab for active search.", result.diagnostics.suggestions)
 
 
 if __name__ == "__main__":
