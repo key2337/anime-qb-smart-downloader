@@ -13,9 +13,9 @@ from aqsd.nyaa import fetch_nyaa_candidates
 from aqsd.parser import parse_candidate
 from aqsd.rss import fetch_rss
 from aqsd.scorer import score_candidate
-from aqsd.title_resolver import resolve_title_query
+from aqsd.title_resolver import TitleResolution, resolve_title_query
 from aqsd.torznab import fetch_torznab_candidates
-from aqsd.utils import contains_all_keywords, contains_any_keyword, normalize_text
+from aqsd.utils import contains_all_keywords, contains_any_search_keyword, normalize_text
 
 
 @dataclass(slots=True)
@@ -112,9 +112,10 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     seen_urls: set[str] = set()
     seen_hashes: set[str] = set()
     seen_title_episodes: set[tuple[str, str]] = set()
-    title_resolution = resolve_title_query(request.query, config.title_aliases)
+    title_resolution = resolve_search_title(config, request.query)
     if not request.expanded_queries:
         request.expanded_queries.extend(title_resolution.expanded_queries)
+    logger.info("Search queries expanded: {}", ", ".join(request.expanded_queries or [request.query]))
 
     for source in config.rss_sources:
         if not source.enabled:
@@ -189,6 +190,24 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     return result
 
 
+def resolve_search_title(config: AppConfig, query: str) -> TitleResolution:
+    anilist_settings = config.metadata_sources.anilist
+    if not anilist_settings.enabled:
+        return resolve_title_query(query, config.title_aliases)
+
+    cache = Database(config.app.database) if anilist_settings.cache_enabled else None
+    try:
+        return resolve_title_query(
+            query,
+            config.title_aliases,
+            anilist_settings=anilist_settings,
+            cache=cache,
+        )
+    finally:
+        if cache is not None:
+            cache.close()
+
+
 def _collect_search_matches(
     items: list[Candidate],
     request: SearchRequest,
@@ -241,11 +260,9 @@ def _hash_key(candidate: Candidate) -> str | None:
 
 def _matches_search_request(candidate: Candidate, request: SearchRequest) -> bool:
     if request.query:
-        searchable_values = [candidate.title]
-        if candidate.parsed_title:
-            searchable_values.append(candidate.parsed_title)
+        searchable_values = [candidate.parsed_title or candidate.title]
         queries = request.expanded_queries or [request.query]
-        if not any(contains_any_keyword(value, queries) for value in searchable_values):
+        if not any(contains_any_search_keyword(value, queries) for value in searchable_values):
             return False
 
     if request.episodes and (candidate.episode or "") not in _normalize_episode_values(request.episodes):

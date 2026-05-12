@@ -8,7 +8,7 @@ from typing import TextIO
 from loguru import logger
 
 from aqsd.config import AppConfig
-from aqsd.discovery import SearchRequest, discover_search_candidates
+from aqsd.discovery import SearchRequest, discover_search_candidates, resolve_search_title
 from aqsd.database import Database
 from aqsd.models import Candidate, DownloadTask
 from aqsd.probe import probe_candidates
@@ -96,6 +96,23 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
 
     print(f"Added torrent: {best.title}", file=stream)
     print(f"Task tag: {best.task_tag}", file=stream)
+    return 0
+
+
+def run_resolve_title_command(args: argparse.Namespace, config: AppConfig, out: TextIO | None = None) -> int:
+    stream = out or sys.stdout
+    resolution = resolve_search_title(config, args.query)
+
+    print(f"query: {args.query}", file=stream)
+    print(f"canonical: {resolution.canonical}", file=stream)
+    print(f"source: {resolution.source}", file=stream)
+    print(f"local_alias_matched: {'yes' if resolution.local_alias_matched else 'no'}", file=stream)
+    print(f"anilist_enabled: {'yes' if resolution.anilist_enabled else 'no'}", file=stream)
+    print(f"anilist_attempted: {'yes' if resolution.anilist_attempted else 'no'}", file=stream)
+    print(f"cache_hit: {'yes' if resolution.cache_hit else 'no'}", file=stream)
+    print("expanded_queries:", file=stream)
+    for value in resolution.expanded_queries:
+        print(f"- {value}", file=stream)
     return 0
 
 

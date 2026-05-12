@@ -76,6 +76,7 @@ The local `config.yaml` is intentionally ignored by Git.
 - `qbittorrent`: Web API endpoint, username, password, default category, default save path
 - `rss_sources`: list of RSS feeds to poll
 - `search_sources`: optional active search providers such as Nyaa and Torznab for manual search/download
+- `metadata_sources`: optional title metadata providers such as AniList for automatic alias expansion
 - `fallback_policy`: thresholds for suspicious download detection
 - `probe_policy`: optional short qBittorrent probe settings for manual candidate selection
 - `title_aliases`: local multilingual title aliases for manual search and download
@@ -181,7 +182,21 @@ RSS is generally better for following new releases from known feeds. Nyaa and To
 
 ### Multilingual title aliases
 
-Manual `search` and `download` can expand a user query through local `title_aliases`. This lets Chinese, English, Japanese, and romanized names point to the same RSS title set.
+Manual `search` and `download` can expand a user query through local `title_aliases` and optional AniList metadata. This lets Chinese, English, Japanese, and romanized names point to the same RSS, Nyaa, or Torznab title set.
+
+AniList metadata lookup can be enabled like this:
+
+```yaml
+metadata_sources:
+  anilist:
+    enabled: true
+    endpoint: "https://graphql.anilist.co"
+    timeout_seconds: 15
+    cache_enabled: true
+    cache_ttl_days: 30
+```
+
+When enabled, manual search first checks local `title_aliases`. If no local alias group matches, it queries AniList for anime title metadata and expands the query with `title.romaji`, `title.english`, `title.native`, and `synonyms`. Results are cached in SQLite so repeated searches do not request AniList every time.
 
 Example:
 
@@ -199,7 +214,7 @@ title_aliases:
 
 With this config, searches for `一拳超人`, `One Punch Man`, `One-Punch Man`, or `ワンパンマン` can match RSS entries containing any alias in the group. Matching is case-insensitive and tolerant of common spacing / hyphen differences such as `One Punch Man` vs `One-Punch Man`.
 
-This first version is local-only. It does not call external title databases, so aliases must be configured before they can be expanded. The automatic anime rule flow still uses the existing `anime.aliases` rules and is not changed by `title_aliases`.
+`title_aliases` remains the manual fallback and takes priority over AniList when it matches. AniList reduces the amount of hand-maintained alias config, but Chinese titles are not guaranteed to resolve perfectly for every show. If AniList is disabled or unavailable, search falls back to local aliases and the original query. The automatic anime rule flow still uses the existing `anime.aliases` rules and is not changed by metadata lookup.
 
 Probe the top candidates in qBittorrent before choosing:
 

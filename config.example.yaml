@@ -30,6 +30,14 @@ search_sources:
         categories: []
         timeout_seconds: 15
 
+metadata_sources:
+  anilist:
+    enabled: true
+    endpoint: "https://graphql.anilist.co"
+    timeout_seconds: 15
+    cache_enabled: true
+    cache_ttl_days: 30
+
 fallback_policy:
   enabled: true
   check_after_minutes: 10
@@ -55,6 +63,22 @@ title_aliases:
       - "One-Punch Man"
       - "Wanpanman"
       - "ワンパンマン"
+  - canonical: "Angel Beats!"
+    aliases:
+      - "天使的心跳"
+      - "Angel Beats!"
+      - "エンジェルビーツ"
+  - canonical: "Apocalypse Hotel"
+    aliases:
+      - "末日后酒店"
+      - "Apocalypse Hotel"
+      - "アポカリプスホテル"
+  - canonical: "Ruri no Houseki"
+    aliases:
+      - "琉璃的宝石"
+      - "Ruri no Houseki"
+      - "Ruri Rocks"
+      - "瑠璃の宝石"
 
 profiles:
   fastest:

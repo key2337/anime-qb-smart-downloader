@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aqsd.models import Candidate, DownloadTask
@@ -75,6 +77,16 @@ CREATE TABLE IF NOT EXISTS fallback_candidates (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(task_id, candidate_url)
+);
+
+CREATE TABLE IF NOT EXISTS title_metadata_cache (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  query TEXT NOT NULL,
+  aliases_json TEXT NOT NULL,
+  source TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  expires_at TIMESTAMP NOT NULL,
+  UNIQUE(query, source)
 );
 """
 
@@ -381,6 +393,59 @@ class Database:
         )
         self.conn.commit()
 
+    def get_title_alias_cache(self, query: str, source: str) -> list[str] | None:
+        now = datetime.now(timezone.utc)
+        row = self.conn.execute(
+            """
+            SELECT aliases_json, expires_at
+            FROM title_metadata_cache
+            WHERE query = ? AND source = ?
+            """,
+            (query, source),
+        ).fetchone()
+        if row is None:
+            return None
+
+        expires_at = _parse_cache_datetime(row["expires_at"])
+        if expires_at is None or expires_at <= now:
+            return None
+
+        try:
+            aliases = json.loads(row["aliases_json"])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(aliases, list):
+            return None
+        return [str(alias) for alias in aliases if str(alias).strip()]
+
+    def save_title_alias_cache(self, query: str, aliases: list[str], source: str, ttl_days: int) -> None:
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(days=ttl_days)
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO title_metadata_cache(query, aliases_json, source, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                query,
+                json.dumps(aliases, ensure_ascii=False),
+                source,
+                now.isoformat(),
+                expires_at.isoformat(),
+            ),
+        )
+        self.conn.commit()
+
+    def delete_title_alias_cache(self, query: str, source: str) -> None:
+        self.conn.execute(
+            """
+            DELETE FROM title_metadata_cache
+            WHERE query = ? AND source = ?
+            """,
+            (query, source),
+        )
+        self.conn.commit()
+
     def _migrate(self) -> None:
         existing_columns = {
             row["name"] for row in self.conn.execute("PRAGMA table_info(download_tasks)").fetchall()
@@ -402,3 +467,13 @@ class Database:
         )
         self.conn.execute("UPDATE download_tasks SET status = 'downloading' WHERE status = 'monitoring'")
         self.conn.commit()
+
+
+def _parse_cache_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed

@@ -6,11 +6,12 @@ from argparse import Namespace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from aqsd.cli import build_search_request, run_download_command, run_search_command
+from aqsd.cli import build_search_request, run_download_command, run_resolve_title_command, run_search_command
 from aqsd.config import AppConfig
 from aqsd.discovery import DiscoveryResult
 from aqsd.models import Candidate
 from aqsd.probe import ProbeResult
+from aqsd.title_resolver import TitleResolution
 
 
 def _build_config() -> AppConfig:
@@ -124,7 +125,34 @@ class SearchCliTests(unittest.TestCase):
         self.assertIn("\t01\t1080p\tLoliHouse\tembedded\t12\t2026-04-28 09:30:00\t123.4\tmock", rendered)
         mock_discover_search_candidates.assert_called_once()
 
+    @patch("aqsd.cli.resolve_search_title")
+    def test_run_resolve_title_command_displays_expanded_queries(self, mock_resolve_search_title) -> None:
+        mock_resolve_search_title.return_value = TitleResolution(
+            canonical="Angel Beats!",
+            expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
+            source="anilist",
+            local_alias_matched=False,
+            cache_hit=False,
+            anilist_enabled=True,
+            anilist_attempted=True,
+        )
+        args = Namespace(query="天使的心跳")
+        output = io.StringIO()
+
+        exit_code = run_resolve_title_command(args, _build_config(), out=output)
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("query: 天使的心跳", rendered)
+        self.assertIn("canonical: Angel Beats!", rendered)
+        self.assertIn("source: anilist", rendered)
+        self.assertIn("anilist_enabled: yes", rendered)
+        self.assertIn("cache_hit: no", rendered)
+        self.assertIn("- Angel Beats!", rendered)
+        mock_resolve_search_title.assert_called_once()
+
     @patch("aqsd.main.run_search_command")
+    @patch("aqsd.main.run_resolve_title_command")
     @patch("aqsd.main.run_once")
     @patch("aqsd.main.run_dry_run")
     @patch("aqsd.main.check_connections")
@@ -136,6 +164,7 @@ class SearchCliTests(unittest.TestCase):
         mock_check_connections,
         mock_run_dry_run,
         mock_run_once,
+        mock_run_resolve_title_command,
         mock_run_search_command,
     ) -> None:
         from aqsd.main import main
@@ -157,6 +186,45 @@ class SearchCliTests(unittest.TestCase):
         self.assertEqual(called_args.subtitle, "embedded")
         self.assertTrue(called_args.raw_only)
         self.assertIs(called_config, config)
+        mock_run_once.assert_not_called()
+        mock_run_dry_run.assert_not_called()
+        mock_check_connections.assert_not_called()
+        mock_run_resolve_title_command.assert_not_called()
+
+    @patch("aqsd.main.run_download_command")
+    @patch("aqsd.main.run_search_command")
+    @patch("aqsd.main.run_resolve_title_command")
+    @patch("aqsd.main.run_once")
+    @patch("aqsd.main.run_dry_run")
+    @patch("aqsd.main.check_connections")
+    @patch("aqsd.main.load_config")
+    @patch("sys.argv", ["aqsd", "resolve-title", "天使的心跳"])
+    def test_main_dispatches_resolve_title_without_running_other_modes(
+        self,
+        mock_load_config,
+        mock_check_connections,
+        mock_run_dry_run,
+        mock_run_once,
+        mock_run_resolve_title_command,
+        mock_run_search_command,
+        mock_run_download_command,
+    ) -> None:
+        from aqsd.main import main
+
+        config = _build_config()
+        mock_load_config.return_value = config
+        mock_run_resolve_title_command.return_value = 0
+
+        with self.assertRaises(SystemExit) as exc:
+            main()
+
+        self.assertEqual(exc.exception.code, 0)
+        mock_run_resolve_title_command.assert_called_once()
+        called_args, called_config = mock_run_resolve_title_command.call_args.args
+        self.assertEqual(called_args.query, "天使的心跳")
+        self.assertIs(called_config, config)
+        mock_run_search_command.assert_not_called()
+        mock_run_download_command.assert_not_called()
         mock_run_once.assert_not_called()
         mock_run_dry_run.assert_not_called()
         mock_check_connections.assert_not_called()

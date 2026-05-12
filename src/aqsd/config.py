@@ -55,6 +55,18 @@ class SearchSourcesSettings(BaseModel):
     torznab: TorznabSearchSourceSettings = Field(default_factory=TorznabSearchSourceSettings)
 
 
+class AniListMetadataSourceSettings(BaseModel):
+    enabled: bool = False
+    endpoint: str = "https://graphql.anilist.co"
+    timeout_seconds: int = 15
+    cache_enabled: bool = True
+    cache_ttl_days: int = 30
+
+
+class MetadataSourcesSettings(BaseModel):
+    anilist: AniListMetadataSourceSettings = Field(default_factory=AniListMetadataSourceSettings)
+
+
 class FallbackPolicy(BaseModel):
     enabled: bool = True
     check_after_minutes: int = 10
@@ -98,6 +110,7 @@ class AppConfig(BaseModel):
     qbittorrent: QBittorrentSettings
     rss_sources: list[RSSSourceSettings] = Field(default_factory=list)
     search_sources: SearchSourcesSettings = Field(default_factory=SearchSourcesSettings)
+    metadata_sources: MetadataSourcesSettings = Field(default_factory=MetadataSourcesSettings)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
     probe_policy: ProbePolicy = Field(default_factory=ProbePolicy)
     title_aliases: list[TitleAliasSettings] = Field(default_factory=list)

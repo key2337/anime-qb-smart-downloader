@@ -6,6 +6,7 @@ from unittest.mock import patch
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_rule_candidates, discover_search_candidates
 from aqsd.models import Candidate
+from aqsd.anilist import TitleMetadata
 
 
 class _FakeDatabase:
@@ -165,6 +166,52 @@ def _build_all_search_sources_config() -> AppConfig:
                     "aliases": ["OPM", "One Punch Man", "One-Punch Man"],
                 }
             ],
+        }
+    )
+
+
+def _build_anilist_search_config() -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "qbittorrent": {
+                "base_url": "http://127.0.0.1:8080",
+                "username": "user",
+                "password": "pass",
+                "default_category": "Anime",
+                "default_save_path": "/downloads/anime",
+            },
+            "rss_sources": [
+                {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
+            ],
+            "search_sources": {
+                "nyaa": {
+                    "enabled": True,
+                    "base_url": "https://nyaa.si",
+                    "default_category": "1_2",
+                    "timeout_seconds": 15,
+                },
+                "torznab": {
+                    "enabled": True,
+                    "endpoints": [
+                        {
+                            "name": "jackett-nyaa",
+                            "url": "http://127.0.0.1:9117/api/v2.0/indexers/nyaa/results/torznab/",
+                            "api_key": "secret",
+                            "categories": [],
+                            "timeout_seconds": 15,
+                        }
+                    ],
+                },
+            },
+            "metadata_sources": {
+                "anilist": {
+                    "enabled": True,
+                    "endpoint": "https://graphql.anilist.co",
+                    "timeout_seconds": 15,
+                    "cache_enabled": False,
+                    "cache_ttl_days": 30,
+                }
+            },
         }
     )
 
@@ -629,6 +676,184 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(len(result.candidates), 1)
         self.assertEqual(result.candidates[0].url, "magnet:?xt=urn:btih:SAMEHASH")
+
+    @patch("aqsd.title_resolver.fetch_anilist_title_metadata")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_search_uses_anilist_expanded_queries_for_rss_matching(
+        self,
+        mock_fetch_rss,
+        mock_fetch_anilist,
+    ) -> None:
+        mock_fetch_anilist.return_value = [
+            TitleMetadata(canonical="One Punch Man", aliases=["One Punch Man", "ワンパンマン"])
+        ]
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] One Punch Man - 01 [1080p][CHS]",
+                url="https://example.test/opm-1",
+                source="mock",
+            )
+        ]
+        config = _build_anilist_search_config()
+        config.search_sources.nyaa.enabled = False
+        config.search_sources.torznab.enabled = False
+
+        result = discover_search_candidates(config, SearchRequest(query="一拳超人"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].title, "[SubsPlease] One Punch Man - 01 [1080p][CHS]")
+
+    @patch("aqsd.title_resolver.fetch_anilist_title_metadata")
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_anilist_expanded_queries_are_used_for_nyaa_and_torznab_search(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+        mock_fetch_anilist,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.return_value = []
+        mock_fetch_anilist.return_value = [
+            TitleMetadata(
+                canonical="One Punch Man",
+                aliases=["One Punch Man", "One-Punch Man", "ワンパンマン"],
+                romaji="One Punch Man",
+                english="One-Punch Man",
+                native="ワンパンマン",
+            )
+        ]
+
+        discover_search_candidates(_build_anilist_search_config(), SearchRequest(query="一拳超人"))
+
+        nyaa_queries = [call.args[1] for call in mock_fetch_nyaa_candidates.call_args_list]
+        torznab_queries = [call.args[1] for call in mock_fetch_torznab_candidates.call_args_list]
+        self.assertIn("一拳超人", nyaa_queries)
+        self.assertIn("One Punch Man", nyaa_queries)
+        self.assertIn("ワンパンマン", nyaa_queries)
+        self.assertIn("一拳超人", torznab_queries)
+        self.assertIn("One Punch Man", torznab_queries)
+        self.assertIn("ワンパンマン", torznab_queries)
+
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_search_ignores_release_group_false_positive_for_single_word_query(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[Lain32] Lupin III: The Castle of Cagliostro [480p]",
+                url="https://example.test/lupin",
+                source="mock",
+            ),
+            Candidate(
+                title="[Chotab] Serial Experiments Lain - 01 [1080p]",
+                url="https://example.test/lain",
+                source="mock",
+            ),
+        ]
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="lain"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].url, "https://example.test/lain")
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_short_alias_does_not_match_unrelated_longer_token(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[Gecko] AOTU WORLD REBORN - S01E04 [1080p]",
+                url="https://example.test/aotu",
+                source="mock",
+            ),
+            Candidate(
+                title="[Judas] Attack on Titan - 01 [1080p]",
+                url="https://example.test/aot",
+                source="mock",
+            ),
+        ]
+        config = _build_all_search_sources_config()
+        config.search_sources.nyaa.enabled = False
+        config.search_sources.torznab.enabled = False
+        config = AppConfig.model_validate(
+            {
+                **config.model_dump(),
+                "title_aliases": [
+                    {
+                        "canonical": "Attack on Titan",
+                        "aliases": ["Attack on Titan", "Shingeki no Kyojin", "AoT"],
+                    }
+                ],
+            }
+        )
+
+        result = discover_search_candidates(config, SearchRequest(query="Attack on Titan"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].url, "https://example.test/aot")
+
+    @patch("aqsd.title_resolver.fetch_anilist_title_metadata")
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_uses_anilist_expanded_queries_for_nyaa_search(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+        mock_fetch_anilist,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.return_value = []
+        mock_fetch_anilist.return_value = [
+            TitleMetadata(
+                canonical="Angel Beats!",
+                aliases=["Angel Beats!", "エンジェルビーツ", "天使的心跳"],
+                romaji="Angel Beats!",
+                english="Angel Beats!",
+                native="エンジェルビーツ",
+            )
+        ]
+
+        discover_search_candidates(_build_anilist_search_config(), SearchRequest(query="天使的心跳"))
+
+        called_queries = [call.args[1] for call in mock_fetch_nyaa_candidates.call_args_list]
+        self.assertIn("天使的心跳", called_queries)
+        self.assertIn("Angel Beats!", called_queries)
+        self.assertIn("エンジェルビーツ", called_queries)
+
+    @patch("aqsd.title_resolver.fetch_anilist_title_metadata")
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_uses_anilist_expanded_queries_for_torznab_search(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+        mock_fetch_anilist,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.return_value = []
+        mock_fetch_anilist.return_value = [
+            TitleMetadata(
+                canonical="Angel Beats!",
+                aliases=["Angel Beats!", "エンジェルビーツ", "天使的心跳"],
+                romaji="Angel Beats!",
+                english="Angel Beats!",
+                native="エンジェルビーツ",
+            )
+        ]
+
+        discover_search_candidates(_build_anilist_search_config(), SearchRequest(query="天使的心跳"))
+
+        called_queries = [call.args[1] for call in mock_fetch_torznab_candidates.call_args_list]
+        self.assertIn("天使的心跳", called_queries)
+        self.assertIn("Angel Beats!", called_queries)
+        self.assertIn("エンジェルビーツ", called_queries)
 
 
 if __name__ == "__main__":
