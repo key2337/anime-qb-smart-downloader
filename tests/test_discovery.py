@@ -119,6 +119,56 @@ def _build_nyaa_config() -> AppConfig:
     )
 
 
+def _build_all_search_sources_config() -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "qbittorrent": {
+                "base_url": "http://127.0.0.1:8080",
+                "username": "user",
+                "password": "pass",
+                "default_category": "Anime",
+                "default_save_path": "/downloads/anime",
+            },
+            "rss_sources": [
+                {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
+            ],
+            "search_sources": {
+                "nyaa": {
+                    "enabled": True,
+                    "base_url": "https://nyaa.si",
+                    "default_category": "1_2",
+                    "timeout_seconds": 15,
+                },
+                "torznab": {
+                    "enabled": True,
+                    "endpoints": [
+                        {
+                            "name": "jackett-nyaa",
+                            "url": "http://127.0.0.1:9117/api/v2.0/indexers/nyaa/results/torznab/",
+                            "api_key": "secret",
+                            "categories": [],
+                            "timeout_seconds": 15,
+                        },
+                        {
+                            "name": "prowlarr-other",
+                            "url": "http://127.0.0.1:9696/1/api",
+                            "api_key": "secret",
+                            "categories": ["5070"],
+                            "timeout_seconds": 15,
+                        },
+                    ],
+                },
+            },
+            "title_aliases": [
+                {
+                    "canonical": "OPM",
+                    "aliases": ["OPM", "One Punch Man", "One-Punch Man"],
+                }
+            ],
+        }
+    )
+
+
 class DiscoveryTests(unittest.TestCase):
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_rule_candidates_skips_downloaded_and_persists_matches(self, mock_fetch_rss) -> None:
@@ -469,6 +519,116 @@ class DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(len(result.candidates), 1)
         self.assertEqual(result.candidates[0].url, "https://example.test/rss-1")
+
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_search_merges_rss_nyaa_and_torznab_results(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+    ) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(title="[RSS] Example Anime - 01 [1080p]", url="https://example.test/rss-1", source="mock")
+        ]
+        mock_fetch_nyaa_candidates.return_value = [
+            Candidate(title="[Nyaa] Example Anime - 02 [1080p]", url="https://nyaa.si/view/2", source="nyaa")
+        ]
+        mock_fetch_torznab_candidates.return_value = [
+            Candidate(title="[Torznab] Example Anime - 03 [1080p]", url="magnet:?xt=urn:btih:torznab03", source="jackett")
+        ]
+
+        result = discover_search_candidates(_build_all_search_sources_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(
+            {candidate.url for candidate in result.candidates},
+            {"https://example.test/rss-1", "https://nyaa.si/view/2", "magnet:?xt=urn:btih:torznab03"},
+        )
+
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_title_alias_expanded_queries_are_used_for_torznab_search(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.return_value = []
+
+        discover_search_candidates(_build_all_search_sources_config(), SearchRequest(query="OPM"))
+
+        called_queries = [call.args[1] for call in mock_fetch_torznab_candidates.call_args_list]
+        self.assertIn("OPM", called_queries)
+        self.assertIn("One Punch Man", called_queries)
+        self.assertIn("One-Punch Man", called_queries)
+
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_torznab_endpoint_failure_does_not_block_other_sources(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+    ) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(title="[RSS] Example Anime - 01 [1080p]", url="https://example.test/rss-1", source="mock")
+        ]
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.side_effect = [
+            RuntimeError("endpoint down"),
+            [Candidate(title="[Torznab] Example Anime - 02 [1080p]", url="magnet:?xt=urn:btih:torznab02", source="prowlarr")],
+        ]
+
+        config = _build_all_search_sources_config()
+        config.search_sources.nyaa.enabled = False
+        result = discover_search_candidates(config, SearchRequest(query="Example Anime"))
+
+        self.assertEqual(
+            {candidate.url for candidate in result.candidates},
+            {"https://example.test/rss-1", "magnet:?xt=urn:btih:torznab02"},
+        )
+
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_torznab_hash_deduplication_keeps_first_candidate(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.side_effect = [
+            [
+                Candidate(
+                    title="[First] Example Anime - 01 [1080p]",
+                    url="magnet:?xt=urn:btih:SAMEHASH",
+                    source="jackett",
+                    info_hash="SAMEHASH",
+                )
+            ],
+            [
+                Candidate(
+                    title="[Second] Example Anime - 01 [1080p]",
+                    url="https://example.test/download/same",
+                    source="prowlarr",
+                    info_hash="samehash",
+                )
+            ],
+        ]
+
+        config = _build_all_search_sources_config()
+        config.search_sources.nyaa.enabled = False
+        result = discover_search_candidates(config, SearchRequest(query="Example Anime"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].url, "magnet:?xt=urn:btih:SAMEHASH")
 
 
 if __name__ == "__main__":

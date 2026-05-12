@@ -36,8 +36,23 @@ class NyaaSearchSourceSettings(BaseModel):
     timeout_seconds: int = 15
 
 
+class TorznabEndpointSettings(BaseModel):
+    name: str
+    url: str
+    api_key: str
+    categories: list[str] = Field(default_factory=list)
+    timeout_seconds: int = 15
+    enabled: bool = True
+
+
+class TorznabSearchSourceSettings(BaseModel):
+    enabled: bool = False
+    endpoints: list[TorznabEndpointSettings] = Field(default_factory=list)
+
+
 class SearchSourcesSettings(BaseModel):
     nyaa: NyaaSearchSourceSettings = Field(default_factory=NyaaSearchSourceSettings)
+    torznab: TorznabSearchSourceSettings = Field(default_factory=TorznabSearchSourceSettings)
 
 
 class FallbackPolicy(BaseModel):

@@ -9,6 +9,7 @@ class Candidate:
     title: str
     url: str
     source: str
+    info_hash: str | None = None
     published_at: datetime | None = None
     seeders: int = 0
 

@@ -45,9 +45,9 @@ def _dedupe_non_empty(values: Iterable[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for value in values:
-        normalized = normalize_title_key(value)
-        if not value or not normalized or normalized in seen:
+        stripped = value.strip()
+        if not stripped or stripped.casefold() in seen:
             continue
-        seen.add(normalized)
-        result.append(value)
+        seen.add(stripped.casefold())
+        result.append(stripped)
     return result

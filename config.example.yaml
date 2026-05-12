@@ -21,6 +21,14 @@ search_sources:
     base_url: "https://nyaa.si"
     default_category: "1_2"
     timeout_seconds: 15
+  torznab:
+    enabled: false
+    endpoints:
+      - name: "jackett-nyaa"
+        url: "http://127.0.0.1:9117/api/v2.0/indexers/nyaa/results/torznab/"
+        api_key: "change-me"
+        categories: []
+        timeout_seconds: 15
 
 fallback_policy:
   enabled: true

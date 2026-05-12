@@ -14,6 +14,7 @@ from aqsd.parser import parse_candidate
 from aqsd.rss import fetch_rss
 from aqsd.scorer import score_candidate
 from aqsd.title_resolver import resolve_title_query
+from aqsd.torznab import fetch_torznab_candidates
 from aqsd.utils import contains_all_keywords, contains_any_keyword, normalize_text
 
 
@@ -109,6 +110,7 @@ def discover_rule_candidates(
 def discover_search_candidates(config: AppConfig, request: SearchRequest) -> DiscoveryResult:
     result = DiscoveryResult()
     seen_urls: set[str] = set()
+    seen_hashes: set[str] = set()
     seen_title_episodes: set[tuple[str, str]] = set()
     title_resolution = resolve_title_query(request.query, config.title_aliases)
     if not request.expanded_queries:
@@ -127,6 +129,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
             config,
             result,
             seen_urls,
+            seen_hashes,
             seen_title_episodes,
         )
 
@@ -147,8 +150,33 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
                 config,
                 result,
                 seen_urls,
+                seen_hashes,
                 seen_title_episodes,
             )
+
+    torznab_settings = config.search_sources.torznab
+    if torznab_settings.enabled:
+        for endpoint in torznab_settings.endpoints:
+            if not endpoint.enabled:
+                continue
+            for query in request.expanded_queries or [request.query]:
+                try:
+                    logger.info("Searching Torznab: endpoint={} query={}", endpoint.name, query)
+                    items = fetch_torznab_candidates(endpoint, query, limit=request.limit)
+                except Exception as exc:
+                    logger.warning("Torznab search failed: endpoint={} query={} error={}", endpoint.name, query, exc)
+                    continue
+
+                result.rss_entries_total += len(items)
+                _collect_search_matches(
+                    items,
+                    request,
+                    config,
+                    result,
+                    seen_urls,
+                    seen_hashes,
+                    seen_title_episodes,
+                )
 
     result.candidates = sorted(
         result.candidates,
@@ -167,6 +195,7 @@ def _collect_search_matches(
     config: AppConfig,
     result: DiscoveryResult,
     seen_urls: set[str],
+    seen_hashes: set[str],
     seen_title_episodes: set[tuple[str, str]],
 ) -> None:
     for item in items:
@@ -174,11 +203,17 @@ def _collect_search_matches(
             continue
 
         candidate = parse_candidate(item)
+        hash_key = _hash_key(candidate)
+        if hash_key and hash_key in seen_hashes:
+            continue
+
         duplicate_key = _title_episode_key(candidate)
         if duplicate_key and duplicate_key in seen_title_episodes:
             continue
 
         seen_urls.add(candidate.url)
+        if hash_key:
+            seen_hashes.add(hash_key)
         if duplicate_key:
             seen_title_episodes.add(duplicate_key)
 
@@ -196,6 +231,12 @@ def _title_episode_key(candidate: Candidate) -> tuple[str, str] | None:
     if not candidate.episode:
         return None
     return normalize_text(candidate.title), candidate.episode
+
+
+def _hash_key(candidate: Candidate) -> str | None:
+    if not candidate.info_hash:
+        return None
+    return candidate.info_hash.strip().casefold() or None
 
 
 def _matches_search_request(candidate: Candidate, request: SearchRequest) -> bool:
