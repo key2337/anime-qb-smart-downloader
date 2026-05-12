@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,6 +17,7 @@ API_DEPENDENCY_ERROR = "API server dependencies are not installed. Please instal
 DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8765
 MAX_API_SEARCH_LIMIT = 100
+WEB_DIR = Path(__file__).with_name("web")
 
 
 class ResolveTitlePayload(BaseModel):
@@ -34,9 +36,25 @@ class SearchPayload(BaseModel):
 
 
 def create_api_app(config: AppConfig):
-    fastapi, http_exception = _import_fastapi_runtime()
+    fastapi, http_exception, file_response, plain_text_response = _import_fastapi_runtime()
 
     app = fastapi.FastAPI(title="aqsd API", version="0.1.0")
+
+    @app.get("/")
+    def index():
+        return _web_file_response("index.html", media_type="text/html; charset=utf-8", file_response=file_response, http_exception=http_exception)
+
+    @app.get("/app.js")
+    def app_js():
+        return _web_file_response("app.js", media_type="application/javascript; charset=utf-8", file_response=file_response, http_exception=http_exception)
+
+    @app.get("/style.css")
+    def style_css():
+        return _web_file_response("style.css", media_type="text/css; charset=utf-8", file_response=file_response, http_exception=http_exception)
+
+    @app.get("/favicon.ico")
+    def favicon():
+        return plain_text_response("", status_code=204)
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
@@ -88,7 +106,7 @@ def create_api_app(config: AppConfig):
 
 def run_server_command(config: AppConfig, *, host: str = DEFAULT_API_HOST, port: int = DEFAULT_API_PORT) -> int:
     try:
-        _, _ = _import_fastapi_runtime()
+        _import_fastapi_runtime()
         uvicorn = _import_uvicorn_runtime()
     except RuntimeError as exc:
         print(str(exc))
@@ -218,9 +236,10 @@ def _import_fastapi_runtime():
     try:
         import fastapi
         from fastapi import HTTPException
+        from fastapi.responses import FileResponse, PlainTextResponse
     except ImportError as exc:  # pragma: no cover - depends on optional dependency
         raise RuntimeError(API_DEPENDENCY_ERROR) from exc
-    return fastapi, HTTPException
+    return fastapi, HTTPException, FileResponse, PlainTextResponse
 
 
 def _import_uvicorn_runtime():
@@ -229,3 +248,10 @@ def _import_uvicorn_runtime():
     except ImportError as exc:  # pragma: no cover - depends on optional dependency
         raise RuntimeError(API_DEPENDENCY_ERROR) from exc
     return uvicorn
+
+
+def _web_file_response(filename: str, *, media_type: str, file_response: Any, http_exception: Any):
+    path = WEB_DIR / filename
+    if not path.exists():
+        raise http_exception(status_code=500, detail=f"missing web asset: {filename}")
+    return file_response(path, media_type=media_type)

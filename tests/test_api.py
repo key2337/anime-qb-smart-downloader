@@ -46,6 +46,30 @@ class ApiTests(unittest.TestCase):
         app = create_api_app(self.config)
         self.assertIsNotNone(app)
 
+    def test_root_returns_html(self) -> None:
+        client = TestClient(create_api_app(self.config))
+
+        response = client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("AQSD Search Workbench", response.text)
+
+    def test_app_js_can_be_accessed(self) -> None:
+        client = TestClient(create_api_app(self.config))
+
+        response = client.get("/app.js")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("handleSearch", response.text)
+
+    def test_style_css_can_be_accessed(self) -> None:
+        client = TestClient(create_api_app(self.config))
+
+        response = client.get("/style.css")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(".page", response.text)
+
     @patch("aqsd.api._probe_qb_status")
     def test_health_returns_json_with_ok(self, mock_probe_qb_status) -> None:
         mock_probe_qb_status.return_value = {"configured": True, "reachable": True}
@@ -181,6 +205,21 @@ class ApiCommandTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertIn("API server dependencies are not installed", output.getvalue())
+
+    def test_run_server_command_does_not_fail_on_fastapi_runtime_unpacking(self) -> None:
+        output = io.StringIO()
+        mock_uvicorn = Mock()
+        mock_fastapi_runtime = (object(), object(), object(), object())
+        with patch("aqsd.api._import_fastapi_runtime", return_value=mock_fastapi_runtime):
+            with patch("aqsd.api._import_uvicorn_runtime", return_value=mock_uvicorn):
+                with patch("aqsd.api.create_api_app", return_value=object()) as mock_create_api_app:
+                    with redirect_stdout(output):
+                        exit_code = run_server_command(_build_config())
+
+        self.assertEqual(exit_code, 0)
+        mock_create_api_app.assert_called_once()
+        mock_uvicorn.run.assert_called_once()
+        self.assertIn("Starting aqsd API server at http://127.0.0.1:8765", output.getvalue())
 
     @patch("aqsd.api._probe_qb_status")
     def test_build_health_payload_handles_unreachable_qb(self, mock_probe_qb_status) -> None:
