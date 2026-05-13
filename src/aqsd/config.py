@@ -63,7 +63,14 @@ class AniListMetadataSourceSettings(BaseModel):
     cache_ttl_days: int = 30
 
 
+class BangumiMetadataSourceSettings(BaseModel):
+    enabled: bool = False
+    timeout_seconds: int = 8
+    max_results: int = 5
+
+
 class MetadataSourcesSettings(BaseModel):
+    bangumi: BangumiMetadataSourceSettings = Field(default_factory=BangumiMetadataSourceSettings)
     anilist: AniListMetadataSourceSettings = Field(default_factory=AniListMetadataSourceSettings)
 
 

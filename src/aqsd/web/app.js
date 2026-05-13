@@ -1,5 +1,6 @@
 const state = {
   lastExpandedQueries: [],
+  lastExpandedQueryDetails: [],
 };
 
 const elements = {
@@ -18,6 +19,7 @@ const elements = {
   group: document.getElementById("group"),
   rawOnly: document.getElementById("raw-only"),
   excludeBatch: document.getElementById("exclude-batch"),
+  releaseMode: document.getElementById("release-mode"),
   limit: document.getElementById("limit"),
 };
 
@@ -30,15 +32,22 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     void handleSearch();
   });
+  elements.results.addEventListener("click", (event) => {
+    const button = event.target.closest(".toggle-details");
+    if (!button) {
+      return;
+    }
+    toggleCandidateDetails(button);
+  });
 });
 
 async function loadHealth() {
-  elements.health.textContent = "Loading health status...";
+  elements.health.textContent = "正在读取运行状态...";
   try {
     const payload = await apiRequest("/api/health", { method: "GET" });
     renderHealth(payload);
   } catch (error) {
-    elements.health.innerHTML = `<div class="error message">Failed to load health: ${escapeHtml(error.message)}</div>`;
+    elements.health.innerHTML = `<div class="error message">读取运行状态失败：${escapeHtml(error.message)}</div>`;
   }
 }
 
@@ -46,11 +55,11 @@ async function handleResolveTitle() {
   clearFormError();
   const query = elements.query.value.trim();
   if (!query) {
-    showFormError("Please enter an anime title before resolving.");
+    showFormError("请先输入动漫标题，再解析标题。");
     return;
   }
 
-  setLoading(true, "Resolving title...");
+  setLoading(true, "正在解析标题...");
   try {
     const payload = await apiRequest("/api/resolve-title", {
       method: "POST",
@@ -58,18 +67,22 @@ async function handleResolveTitle() {
       body: JSON.stringify({ query }),
     });
     state.lastExpandedQueries = payload.expanded_queries || [];
-    renderExpandedQueries(state.lastExpandedQueries);
+    state.lastExpandedQueryDetails = payload.expanded_query_details || [];
+    renderExpandedQueries(state.lastExpandedQueries, state.lastExpandedQueryDetails);
     renderDiagnostics({
       original_query: query,
       expanded_queries: payload.expanded_queries || [],
+      expanded_query_details: payload.expanded_query_details || [],
       sources: payload.sources || [],
       active_filters: {},
       candidate_count_before_filter: null,
       candidate_count_after_filter: null,
-      suggestions: [],
+      suggestions: ["可先确认这里的标题扩展是否符合预期。"],
+      resolved_subject: payload.resolved_subject || null,
+      rejected_subjects: payload.rejected_subjects || [],
     });
   } catch (error) {
-    showFormError(`Resolve title failed: ${error.message}`);
+    showFormError(`解析标题失败：${error.message}`);
   } finally {
     setLoading(false);
   }
@@ -79,11 +92,11 @@ async function handleSearch() {
   clearFormError();
   const payload = buildSearchPayload();
   if (!payload.query) {
-    showFormError("Please enter an anime title before searching.");
+    showFormError("请先输入动漫标题，再执行搜索。");
     return;
   }
 
-  setLoading(true, "Searching...");
+  setLoading(true, "正在搜索...");
   elements.results.innerHTML = "";
   try {
     const response = await apiRequest("/api/search", {
@@ -92,13 +105,14 @@ async function handleSearch() {
       body: JSON.stringify(payload),
     });
     state.lastExpandedQueries = response.expanded_queries || [];
-    renderExpandedQueries(state.lastExpandedQueries);
+    state.lastExpandedQueryDetails = (response.diagnostics && response.diagnostics.expanded_query_details) || [];
+    renderExpandedQueries(state.lastExpandedQueries, state.lastExpandedQueryDetails);
     renderResults(response.candidates || []);
     renderDiagnostics(response.diagnostics || null, response.candidates || []);
   } catch (error) {
     renderResults([]);
     renderDiagnostics(null, []);
-    showFormError(`Search failed: ${error.message}`);
+    showFormError(`搜索失败：${error.message}`);
   } finally {
     setLoading(false);
   }
@@ -113,6 +127,7 @@ function buildSearchPayload() {
     group: normalizeOptionalText(elements.group.value),
     raw_only: elements.rawOnly.checked,
     exclude_batch: elements.excludeBatch.checked,
+    release_mode: normalizeOptionalText(elements.releaseMode.value) || "any",
     limit: normalizeLimit(elements.limit.value),
   };
 }
@@ -120,26 +135,48 @@ function buildSearchPayload() {
 function renderHealth(payload) {
   const qb = payload.qbittorrent || {};
   const sources = payload.sources || {};
-  const anilist = payload.anilist || {};
-  const qbLabel = qb.reachable ? "reachable" : "unreachable";
-  const qbError = qb.error ? ` (${escapeHtml(qb.error)})` : "";
+  const metadataSources = payload.metadata_sources || {};
+  const anilist = payload.anilist || metadataSources.anilist || {};
+  const bangumi = payload.bangumi || metadataSources.bangumi || {};
+  const qbLabel = qb.reachable ? "可连接" : "不可连接";
+  const qbError = qb.error ? `（${escapeHtml(qb.error)}）` : "";
 
   elements.health.innerHTML = `
-    <div><strong>qBittorrent:</strong> ${qbLabel}${qbError}</div>
+    <div><strong>qBittorrent：</strong>${qbLabel}${qbError}</div>
     <ul class="status-list">
-      <li>RSS: ${boolLabel(sources.rss)}</li>
-      <li>Nyaa: ${boolLabel(sources.nyaa)}</li>
-      <li>Torznab: ${boolLabel(sources.torznab)}</li>
-      <li>AniList: ${boolLabel(anilist.enabled)}</li>
+      <li>RSS：${boolLabel(sources.rss)}</li>
+      <li>Nyaa：${boolLabel(sources.nyaa)}</li>
+      <li>Torznab：${boolLabel(sources.torznab)}</li>
+      <li>Bangumi：${metadataStatusLabel(bangumi)}</li>
+      <li>AniList：${metadataStatusLabel(anilist)}</li>
     </ul>
   `;
 }
 
-function renderExpandedQueries(queries) {
-  if (!queries || queries.length === 0) {
-    elements.expandedQueries.textContent = "No queries resolved yet.";
+function renderExpandedQueries(queries, details = []) {
+  if ((!queries || queries.length === 0) && (!details || details.length === 0)) {
+    elements.expandedQueries.textContent = "还没有解析过标题。";
     return;
   }
+
+  if (details && details.length > 0) {
+    elements.expandedQueries.innerHTML = `
+      <ul class="simple-list">
+        ${details
+          .map(
+            (item) => `
+              <li>
+                <strong>${escapeHtml(item.text)}</strong>
+                <span class="muted">来源：${escapeHtml(item.source || "-")} / 语言：${escapeHtml(item.language || "unknown")} / 置信度：${formatConfidence(item.confidence)} / 搜索：${item.search_eligible ? "使用" : "仅展示"}</span>
+              </li>
+            `,
+          )
+          .join("")}
+      </ul>
+    `;
+    return;
+  }
+
   elements.expandedQueries.innerHTML = `
     <ul class="simple-list">
       ${queries.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
@@ -149,36 +186,67 @@ function renderExpandedQueries(queries) {
 
 function renderResults(candidates) {
   if (!candidates || candidates.length === 0) {
-    elements.results.innerHTML = `<div class="muted">No candidates to display.</div>`;
+    elements.results.innerHTML = `<div class="muted">没有可显示的候选资源。</div>`;
     return;
   }
 
   elements.results.innerHTML = candidates
-    .map((candidate) => {
+    .map((candidate, index) => {
       const parsed = candidate.parsed || {};
-      const breakdown = Array.isArray(candidate.breakdown) ? candidate.breakdown : [];
+      const detailId = `candidate-details-${index + 1}`;
       return `
         <article class="candidate-card">
-          <div class="candidate-title">#${candidate.rank} ${escapeHtml(candidate.title || "-")}</div>
-          <div class="meta-line">
-            <div><strong>Score:</strong> ${formatValue(candidate.score)}</div>
-            <div><strong>Source:</strong> ${escapeHtml(candidate.source || "-")}</div>
-            <div><strong>Seeders:</strong> ${formatValue(candidate.seeders)}</div>
-            <div><strong>Published:</strong> ${escapeHtml(formatDate(candidate.published_at))}</div>
-            <div><strong>Magnet:</strong> ${candidate.magnet ? "yes" : "no"}</div>
-            <div><strong>URL:</strong> ${candidate.url ? "yes" : "no"}</div>
+          <div class="candidate-header">
+            <div>
+              <div class="candidate-title">#${candidate.rank} ${escapeHtml(candidate.title || "-")}</div>
+              <div class="candidate-summary">
+                <span><strong>评分：</strong>${formatValue(candidate.score)}</span>
+                <span><strong>来源：</strong>${escapeHtml(candidate.source || "-")}</span>
+                <span><strong>做种数：</strong>${formatValue(candidate.seeders)}</span>
+                <span><strong>发布时间：</strong>${escapeHtml(formatDate(candidate.published_at))}</span>
+                <span><strong>集数：</strong>${escapeHtml(formatValue(parsed.episode))}</span>
+                <span><strong>分辨率：</strong>${escapeHtml(formatValue(parsed.resolution))}</span>
+                <span><strong>字幕组：</strong>${escapeHtml(formatValue(parsed.group))}</span>
+                <span><strong>字幕类型：</strong>${escapeHtml(formatSubtitleType(parsed.subtitle_type))}</span>
+                <span><strong>合集：</strong>${boolOrUnknown(parsed.is_batch)}</span>
+                <span><strong>RAW：</strong>${boolOrUnknown(parsed.is_raw)}</span>
+                <span><strong>Magnet：</strong>${candidate.magnet ? "有" : "无"}</span>
+                <span><strong>URL：</strong>${candidate.url ? "有" : "无"}</span>
+              </div>
+            </div>
+            <button type="button" class="button toggle-details" data-target="${detailId}" aria-expanded="false">展开详情</button>
           </div>
-          <div class="section-label">Parsed</div>
-          <div class="parsed-grid">
-            <div>episode: ${escapeHtml(formatValue(parsed.episode))}</div>
-            <div>resolution: ${escapeHtml(formatValue(parsed.resolution))}</div>
-            <div>group: ${escapeHtml(formatValue(parsed.group))}</div>
-            <div>subtitle: ${escapeHtml(formatValue(parsed.subtitle_type))}</div>
-            <div>is_batch: ${boolOrUnknown(parsed.is_batch)}</div>
-            <div>is_raw: ${boolOrUnknown(parsed.is_raw)}</div>
+          <div id="${detailId}" class="candidate-details hidden">
+            <div class="section-label">命中证据</div>
+            <div class="parsed-grid">
+              <div>matched_query: ${escapeHtml(formatValue(candidate.matched_query))}</div>
+              <div>matched_query_source: ${escapeHtml(formatValue(candidate.matched_query_source))}</div>
+              <div>matched_query_subject_id: ${escapeHtml(formatValue(candidate.matched_query_subject_id))}</div>
+              <div>matched_query_confidence: ${escapeHtml(formatValue(candidate.matched_query_confidence))}</div>
+              <div>title_evidence.type: ${escapeHtml(formatValue(candidate.title_evidence && candidate.title_evidence.type))}</div>
+              <div>title_evidence.reason: ${escapeHtml(formatValue(candidate.title_evidence && candidate.title_evidence.reason))}</div>
+            </div>
+            <div class="section-label">评分原因</div>
+            ${renderReasons(candidate.breakdown)}
+            <div class="section-label">解析信息</div>
+            <div class="parsed-grid">
+              <div>episode: ${escapeHtml(formatValue(parsed.episode))}</div>
+              <div>resolution: ${escapeHtml(formatValue(parsed.resolution))}</div>
+              <div>group: ${escapeHtml(formatValue(parsed.group))}</div>
+              <div>subtitle_type: ${escapeHtml(formatValue(parsed.subtitle_type))}</div>
+              <div>is_batch: ${boolOrUnknown(parsed.is_batch)}</div>
+              <div>is_raw: ${boolOrUnknown(parsed.is_raw)}</div>
+            </div>
+            <div class="section-label">其他信息</div>
+            <div class="parsed-grid">
+              <div>score: ${escapeHtml(formatValue(candidate.score))}</div>
+              <div>source: ${escapeHtml(formatValue(candidate.source))}</div>
+              <div>seeders: ${escapeHtml(formatValue(candidate.seeders))}</div>
+              <div>published_at: ${escapeHtml(formatValue(candidate.published_at))}</div>
+              <div>magnet: ${candidate.magnet ? escapeHtml(candidate.magnet) : "-"}</div>
+              <div>url: ${candidate.url ? escapeHtml(candidate.url) : "-"}</div>
+            </div>
           </div>
-          <div class="section-label">Reasons</div>
-          ${renderReasons(breakdown)}
         </article>
       `;
     })
@@ -187,7 +255,7 @@ function renderResults(candidates) {
 
 function renderReasons(reasons) {
   if (!reasons || reasons.length === 0) {
-    return `<div class="muted">No breakdown reasons available.</div>`;
+    return `<div class="muted">没有可显示的评分原因。</div>`;
   }
   return `
     <ul class="reason-list">
@@ -200,30 +268,109 @@ function renderReasons(reasons) {
 
 function renderDiagnostics(diagnostics, candidates = []) {
   if (!diagnostics) {
-    elements.diagnostics.innerHTML = `<div class="muted">Search diagnostics will appear here when available.</div>`;
+    elements.diagnostics.innerHTML = `<div class="muted">诊断信息会在搜索后显示。</div>`;
     return;
   }
 
   const beforeCount = diagnostics.candidate_count_before_filter;
   const afterCount = diagnostics.candidate_count_after_filter;
-  const noCandidatesNotice =
-    Array.isArray(candidates) && candidates.length === 0
-      ? `<p><strong>No good candidates found.</strong></p>`
-      : "";
-  const filteredNotice =
-    beforeCount !== null && beforeCount > 0 && (afterCount || 0) === 0
-      ? `<p>Candidates were found, but all were filtered out.</p>`
-      : "";
+  const noCandidates = Array.isArray(candidates) && candidates.length === 0;
+  const filteredOut = beforeCount !== null && beforeCount > 0 && (afterCount || 0) === 0;
 
   elements.diagnostics.innerHTML = `
     <div class="diagnostic-block">
-      ${noCandidatesNotice}
-      ${filteredNotice}
-      ${renderKeyValueList("Tried queries", diagnostics.expanded_queries)}
-      ${renderKeyValueList("Sources", diagnostics.sources)}
-      ${renderObjectList("Active filters", diagnostics.active_filters)}
-      ${renderCountBlock(beforeCount, afterCount)}
-      ${renderKeyValueList("Suggestions", diagnostics.suggestions)}
+      ${noCandidates ? `<div class="message warning">当前没有可直接使用的结果。</div>` : ""}
+      ${filteredOut ? `<div class="message warning strong-warning">已找到资源，但全部被当前过滤条件排除了。</div>` : ""}
+      <div class="count-grid">
+        <div class="count-card">
+          <div class="count-label">找到候选数</div>
+          <div class="count-value">${escapeHtml(formatValue(beforeCount))}</div>
+        </div>
+        <div class="count-card">
+          <div class="count-label">过滤后候选数</div>
+          <div class="count-value">${escapeHtml(formatValue(afterCount))}</div>
+        </div>
+      </div>
+      ${filteredOut ? renderRelaxHints() : ""}
+      ${renderResolvedSubject(diagnostics.resolved_subject)}
+      ${renderKeyValueList("尝试过的标题", diagnostics.expanded_queries)}
+      ${renderExpandedQueryDetailList("标题扩展详情", diagnostics.expanded_query_details)}
+      ${renderRejectedSubjects("已拒绝的 subject", diagnostics.rejected_subjects)}
+      ${renderKeyValueList("搜索来源", diagnostics.sources)}
+      ${renderObjectList("当前过滤条件", diagnostics.active_filters)}
+      ${renderKeyValueList("建议", diagnostics.suggestions)}
+    </div>
+  `;
+}
+
+function renderResolvedSubject(subject) {
+  if (!subject) {
+    return `<div class="section-label">已解析作品</div><div class="muted">当前没有选中的 subject。</div>`;
+  }
+  return `
+    <div class="section-label">已解析作品</div>
+    <div class="parsed-grid">
+      <div>source: ${escapeHtml(formatValue(subject.source))}</div>
+      <div>subject_id: ${escapeHtml(formatValue(subject.subject_id))}</div>
+      <div>canonical: ${escapeHtml(formatValue(subject.canonical))}</div>
+      <div>confidence: ${escapeHtml(formatConfidence(subject.confidence))}</div>
+      <div>reason: ${escapeHtml(formatValue(subject.reason))}</div>
+    </div>
+  `;
+}
+
+function renderExpandedQueryDetailList(title, details) {
+  const values = Array.isArray(details) && details.length > 0 ? details : [];
+  if (values.length === 0) {
+    return "";
+  }
+  return `
+    <div class="section-label">${escapeHtml(title)}</div>
+    <ul class="kv-list">
+      ${values
+        .map(
+          (item) => `
+            <li>
+              ${escapeHtml(item.text)}
+              <span class="muted">（${escapeHtml(item.source || "-")} / ${escapeHtml(item.language || "unknown")} / ${item.search_eligible ? "用于搜索" : "仅展示"} / 置信度 ${formatConfidence(item.confidence)}）</span>
+            </li>
+          `,
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderRejectedSubjects(title, values) {
+  const items = Array.isArray(values) ? values : [];
+  if (items.length === 0) {
+    return "";
+  }
+  return `
+    <div class="section-label">${escapeHtml(title)}</div>
+    <ul class="kv-list">
+      ${items
+        .map(
+          (item) => `
+            <li>${escapeHtml(formatValue(item.canonical))} <span class="muted">（id=${escapeHtml(formatValue(item.subject_id))} / 置信度 ${formatConfidence(item.confidence)} / ${escapeHtml(formatValue(item.reason))}）</span></li>
+          `,
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function renderRelaxHints() {
+  return `
+    <div class="relax-box">
+      <div class="section-label">可优先尝试放宽这些条件</div>
+      <ul class="kv-list">
+        <li>清空集数</li>
+        <li>改为不限字幕</li>
+        <li>去掉字幕组限制</li>
+        <li>改为不限资源类型</li>
+        <li>尝试合集 / 整季资源</li>
+      </ul>
     </div>
   `;
 }
@@ -243,22 +390,21 @@ function renderObjectList(title, values) {
   return `
     <div class="section-label">${escapeHtml(title)}</div>
     <ul class="kv-list">
-      ${entries.map(([key, value]) => `<li>${escapeHtml(key)}: ${escapeHtml(String(value))}</li>`).join("")}
+      ${entries.map(([key, value]) => `<li>${escapeHtml(formatFilterKey(key))}：${escapeHtml(formatFilterValue(key, value))}</li>`).join("")}
     </ul>
   `;
 }
 
-function renderCountBlock(beforeCount, afterCount) {
-  if (beforeCount === null && afterCount === null) {
-    return "";
+function toggleCandidateDetails(button) {
+  const targetId = button.getAttribute("data-target");
+  const details = document.getElementById(targetId);
+  if (!details) {
+    return;
   }
-  return `
-    <div class="section-label">Candidate counts</div>
-    <ul class="kv-list">
-      <li>before filter: ${escapeHtml(formatValue(beforeCount))}</li>
-      <li>after filter: ${escapeHtml(formatValue(afterCount))}</li>
-    </ul>
-  `;
+  const isHidden = details.classList.toggle("hidden");
+  const expanded = !isHidden;
+  button.setAttribute("aria-expanded", expanded ? "true" : "false");
+  button.textContent = expanded ? "收起详情" : "展开详情";
 }
 
 async function apiRequest(url, options) {
@@ -274,7 +420,7 @@ async function apiRequest(url, options) {
   return payload;
 }
 
-function setLoading(enabled, text = "Loading...") {
+function setLoading(enabled, text = "正在加载...") {
   elements.loading.textContent = text;
   elements.loading.classList.toggle("hidden", !enabled);
   elements.resolveButton.disabled = enabled;
@@ -305,17 +451,24 @@ function normalizeLimit(value) {
 }
 
 function boolLabel(value) {
-  return value ? "enabled" : "disabled";
+  return value ? "已启用" : "未启用";
+}
+
+function metadataStatusLabel(value) {
+  if (!value || typeof value.enabled !== "boolean") {
+    return "未知";
+  }
+  return value.enabled ? "启用" : "未启用";
 }
 
 function boolOrUnknown(value) {
   if (value === true) {
-    return "yes";
+    return "是";
   }
   if (value === false) {
-    return "no";
+    return "否";
   }
-  return "unknown";
+  return "未知";
 }
 
 function formatValue(value) {
@@ -336,6 +489,59 @@ function formatDelta(value) {
   const numeric = Number(value || 0);
   const rounded = Number.isInteger(numeric) ? numeric.toString() : numeric.toFixed(1).replace(/\.0$/, "");
   return numeric >= 0 ? `+${rounded}` : rounded;
+}
+
+function formatSubtitleType(value) {
+  const mapping = {
+    embedded: "内嵌字幕",
+    external: "外挂字幕",
+    none: "RAW / 无字幕",
+    unknown: "未知",
+  };
+  return mapping[value] || formatValue(value);
+}
+
+function formatFilterKey(key) {
+  const mapping = {
+    episode: "集数",
+    resolution: "分辨率",
+    group: "字幕组",
+    subtitle: "字幕类型",
+    raw_only: "只看 RAW",
+    exclude_batch: "排除合集",
+    min_seeders: "最少做种数",
+    limit: "结果数量",
+    release_mode: "资源类型",
+  };
+  return mapping[key] || key;
+}
+
+function formatFilterValue(key, value) {
+  if (key === "subtitle") {
+    return formatSubtitleType(value);
+  }
+  if (key === "release_mode") {
+    return {
+      any: "不限",
+      episode: "单集",
+      batch: "合集 / 整季",
+    }[value] || String(value);
+  }
+  if (typeof value === "boolean") {
+    return value ? "是" : "否";
+  }
+  return formatValue(value);
+}
+
+function formatConfidence(value) {
+  if (value === null || value === undefined || value === "") {
+    return "-";
+  }
+  const numeric = Number(value);
+  if (Number.isNaN(numeric)) {
+    return String(value);
+  }
+  return numeric.toFixed(2).replace(/0$/, "").replace(/\.$/, "");
 }
 
 function escapeHtml(value) {

@@ -19,14 +19,48 @@ class ScoreBreakdown:
 
 
 @dataclass(slots=True)
+class ExpandedQueryDetail:
+    text: str
+    source: str
+    confidence: float = 1.0
+    subject_id: int | str | None = None
+    language: str = "unknown"
+    subject_confidence: float | None = None
+    alias_confidence: float | None = None
+    reason: str | None = None
+    search_eligible: bool = True
+    search_role: str = "primary"
+    search_tier: str = "primary"
+
+
+@dataclass(slots=True)
+class ResolvedSubject:
+    source: str
+    subject_id: int | str | None
+    canonical: str
+    confidence: float
+    reason: str | None = None
+
+
+@dataclass(slots=True)
+class TitleEvidence:
+    type: str
+    score: float
+    reason: str
+
+
+@dataclass(slots=True)
 class SearchDiagnostics:
     original_query: str
     expanded_queries: list[str] = field(default_factory=list)
+    expanded_query_details: list[ExpandedQueryDetail] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     active_filters: dict[str, Any] = field(default_factory=dict)
     candidate_count_before_filter: int | None = None
     candidate_count_after_filter: int | None = None
     suggestions: list[str] = field(default_factory=list)
+    resolved_subject: ResolvedSubject | None = None
+    rejected_subjects: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -55,6 +89,11 @@ class Candidate:
     score: float = 0.0
     breakdown: ScoreBreakdown | None = None
     score_reasons: list[str] = field(default_factory=list)
+    matched_query: str | None = None
+    matched_query_source: str | None = None
+    matched_query_subject_id: int | str | None = None
+    matched_query_confidence: float | None = None
+    title_evidence: TitleEvidence | None = None
     matched_rule_name: str | None = None
     save_path: str | None = None
     category: str | None = None

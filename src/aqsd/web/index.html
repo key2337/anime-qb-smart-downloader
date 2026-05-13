@@ -1,65 +1,73 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AQSD Search Workbench</title>
+  <title>AQSD 动漫搜索工作台</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <main class="page">
     <header class="page-header">
       <div>
-        <h1>AQSD Search Workbench</h1>
-        <p class="subtitle">Local search, title resolution, score explanation, and failure diagnostics.</p>
+        <h1>AQSD 动漫搜索工作台</h1>
+        <p class="subtitle">本地搜索、标题解析、评分解释，以及无结果时的排查建议。</p>
       </div>
-      <button type="button" class="button button-muted" id="download-placeholder" disabled>Download action is not implemented yet.</button>
+      <button type="button" class="button button-muted" id="download-placeholder" disabled>下载功能本阶段暂未实现</button>
     </header>
 
     <section class="card">
-      <h2>Health</h2>
-      <div id="health-status" class="status-row">Loading health status...</div>
+      <h2>运行状态</h2>
+      <div id="health-status" class="status-row">正在读取运行状态...</div>
     </section>
 
     <section class="card">
-      <h2>Search</h2>
+      <h2>搜索条件</h2>
       <div id="form-error" class="message error hidden"></div>
       <form id="search-form">
         <div class="toolbar">
-          <input id="query" name="query" type="text" placeholder="Anime title" autocomplete="off">
-          <button type="button" class="button" id="resolve-button">Resolve Title</button>
-          <button type="submit" class="button button-primary" id="search-button">Search</button>
+          <input id="query" name="query" type="text" placeholder="输入动漫标题" autocomplete="off">
+          <button type="button" class="button" id="resolve-button">解析标题</button>
+          <button type="submit" class="button button-primary" id="search-button">搜索</button>
         </div>
 
         <div class="grid">
           <label>
-            <span>Episode</span>
-            <input id="episode" name="episode" type="text" placeholder="01">
+            <span>集数</span>
+            <input id="episode" name="episode" type="text" placeholder="例如 01 或 21">
           </label>
           <label>
-            <span>Resolution</span>
+            <span>分辨率</span>
             <select id="resolution" name="resolution">
-              <option value="">any</option>
+              <option value="">不限</option>
               <option value="720p">720p</option>
               <option value="1080p">1080p</option>
               <option value="2160p">2160p</option>
             </select>
           </label>
           <label>
-            <span>Subtitle</span>
+            <span>字幕类型</span>
             <select id="subtitle" name="subtitle">
-              <option value="">any</option>
-              <option value="embedded">embedded</option>
-              <option value="external">external</option>
-              <option value="none">raw</option>
+              <option value="">不限</option>
+              <option value="embedded">内嵌字幕</option>
+              <option value="external">外挂字幕</option>
+              <option value="none">RAW / 无字幕</option>
             </select>
           </label>
           <label>
-            <span>Group</span>
-            <input id="group" name="group" type="text" placeholder="LoliHouse">
+            <span>字幕组</span>
+            <input id="group" name="group" type="text" placeholder="例如 LoliHouse">
           </label>
           <label>
-            <span>Limit</span>
+            <span>资源类型</span>
+            <select id="release-mode" name="release_mode">
+              <option value="any">不限</option>
+              <option value="episode">单集</option>
+              <option value="batch">合集 / 整季</option>
+            </select>
+          </label>
+          <label>
+            <span>结果数量</span>
             <input id="limit" name="limit" type="number" min="1" max="100" value="20">
           </label>
         </div>
@@ -67,30 +75,30 @@
         <div class="checkbox-row">
           <label class="checkbox">
             <input id="raw-only" name="raw_only" type="checkbox">
-            <span>RAW only</span>
+            <span>只看 RAW</span>
           </label>
           <label class="checkbox">
             <input id="exclude-batch" name="exclude_batch" type="checkbox">
-            <span>Exclude batch</span>
+            <span>排除合集</span>
           </label>
         </div>
       </form>
     </section>
 
     <section class="card">
-      <h2>Expanded Queries</h2>
-      <div id="expanded-queries" class="list-block muted">No queries resolved yet.</div>
+      <h2>标题扩展结果</h2>
+      <div id="expanded-queries" class="list-block muted">还没有解析过标题。</div>
     </section>
 
     <section class="card">
-      <h2>Results</h2>
-      <div id="loading" class="message loading hidden">Searching...</div>
-      <div id="results" class="results-list muted">Run a search to see candidates.</div>
+      <h2>搜索结果</h2>
+      <div id="loading" class="message loading hidden">正在搜索...</div>
+      <div id="results" class="results-list muted">执行一次搜索后，这里会显示候选资源。</div>
     </section>
 
     <section class="card">
-      <h2>Diagnostics</h2>
-      <div id="diagnostics" class="muted">Search diagnostics will appear here when available.</div>
+      <h2>搜索诊断</h2>
+      <div id="diagnostics" class="muted">诊断信息会在搜索后显示。</div>
     </section>
   </main>
 

@@ -393,7 +393,7 @@ class Database:
         )
         self.conn.commit()
 
-    def get_title_alias_cache(self, query: str, source: str) -> list[str] | None:
+    def get_title_metadata_cache(self, query: str, source: str):
         now = datetime.now(timezone.utc)
         row = self.conn.execute(
             """
@@ -411,14 +411,21 @@ class Database:
             return None
 
         try:
-            aliases = json.loads(row["aliases_json"])
+            payload = json.loads(row["aliases_json"])
         except json.JSONDecodeError:
             return None
-        if not isinstance(aliases, list):
+        return payload
+
+    def get_title_alias_cache(self, query: str, source: str) -> list[str] | None:
+        payload = self.get_title_metadata_cache(query, source)
+        if not isinstance(payload, list):
             return None
-        return [str(alias) for alias in aliases if str(alias).strip()]
+        return [str(alias) for alias in payload if str(alias).strip()]
 
     def save_title_alias_cache(self, query: str, aliases: list[str], source: str, ttl_days: int) -> None:
+        self.save_title_metadata_cache(query, aliases, source, ttl_days)
+
+    def save_title_metadata_cache(self, query: str, payload, source: str, ttl_days: int) -> None:
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(days=ttl_days)
         self.conn.execute(
@@ -428,7 +435,7 @@ class Database:
             """,
             (
                 query,
-                json.dumps(aliases, ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False),
                 source,
                 now.isoformat(),
                 expires_at.isoformat(),

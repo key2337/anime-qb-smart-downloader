@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_rule_candidates, discover_search_candidates
-from aqsd.models import Candidate, SearchDiagnostics
+from aqsd.models import Candidate, ExpandedQueryDetail, SearchDiagnostics
 from aqsd.anilist import TitleMetadata
 
 
@@ -216,16 +216,43 @@ def _build_anilist_search_config() -> AppConfig:
     )
 
 
+def _build_bangumi_search_config() -> AppConfig:
+    return AppConfig.model_validate(
+        {
+            "qbittorrent": {
+                "base_url": "http://127.0.0.1:8080",
+                "username": "user",
+                "password": "pass",
+                "default_category": "Anime",
+                "default_save_path": "/downloads/anime",
+            },
+            "rss_sources": [
+                {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
+            ],
+            "metadata_sources": {
+                "bangumi": {
+                    "enabled": True,
+                    "timeout_seconds": 8,
+                    "max_results": 5,
+                },
+                "anilist": {
+                    "enabled": False,
+                },
+            },
+        }
+    )
+
+
 class DiscoveryTests(unittest.TestCase):
     def test_search_diagnostics_can_be_constructed(self) -> None:
         diagnostics = SearchDiagnostics(
             original_query="Angel Beats!",
             expanded_queries=["Angel Beats!"],
             sources=["RSS"],
-            active_filters={"episode": "01"},
+            active_filters={"episode": "01", "release_mode": "any"},
             candidate_count_before_filter=3,
             candidate_count_after_filter=0,
-            suggestions=["Check whether the episode number is correct."],
+            suggestions=["可能是集数解析失败，可尝试清空集数后查看候选，或尝试合集 / 整季资源。"],
         )
 
         self.assertEqual(diagnostics.original_query, "Angel Beats!")
@@ -260,8 +287,72 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.parsed_success_total, 2)
         self.assertEqual(len(result.candidates), 1)
         self.assertEqual(result.candidates[0].episode, "02")
-        self.assertEqual(len(db.saved_candidates), 1)
-        self.assertEqual(db.saved_candidates[0].episode, "02")
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discover_search_candidates_exclude_batch_filters_batch_results(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Example Anime - 01 [1080p][CHS]",
+                url="https://example.test/1",
+                source="mock",
+            ),
+            Candidate(
+                title="[LoliHouse] Example Anime Batch [1080p][CHS]",
+                url="https://example.test/2",
+                source="mock",
+            ),
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime", exclude_batch=True),
+        )
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].episode, "01")
+        self.assertEqual(result.diagnostics.active_filters["exclude_batch"], True)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discover_search_candidates_release_mode_batch_keeps_batch_results(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Example Anime - 01 [1080p][CHS]",
+                url="https://example.test/1",
+                source="mock",
+            ),
+            Candidate(
+                title="[LoliHouse] Example Anime Batch [1080p][CHS]",
+                url="https://example.test/2",
+                source="mock",
+            ),
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime", release_mode="batch"),
+        )
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertTrue(result.candidates[0].is_batch)
+        self.assertEqual(result.diagnostics.active_filters["release_mode"], "batch")
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discover_search_candidates_release_mode_batch_allows_episode_filtered_batch_result(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Kanon Batch [1080p][CHS]",
+                url="https://example.test/kanon-batch",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Kanon", episodes=["21"], release_mode="batch"),
+        )
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertTrue(result.candidates[0].is_batch)
 
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_search_candidates_filters_and_scores_results(self, mock_fetch_rss) -> None:
@@ -896,7 +987,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.diagnostics.candidate_count_before_filter, 1)
         self.assertEqual(result.diagnostics.candidate_count_after_filter, 0)
         self.assertEqual(result.diagnostics.active_filters["resolution"], "1080p")
-        self.assertIn("Try removing --group or using a different fansub group.", result.diagnostics.suggestions)
+        self.assertIn("可尝试去掉字幕组限制。", result.diagnostics.suggestions)
 
     @patch("aqsd.discovery.fetch_rss")
     def test_discovery_diagnostics_suggest_enabling_active_search_sources(self, mock_fetch_rss) -> None:
@@ -907,7 +998,168 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.candidates, [])
         self.assertIsNotNone(result.diagnostics)
         self.assertIn("RSS", result.diagnostics.sources)
-        self.assertIn("Enable Nyaa or Torznab for active search.", result.diagnostics.suggestions)
+        self.assertIn("可检查 config.yaml 的 search_sources，按需启用 Nyaa 或 Torznab。", result.diagnostics.suggestions)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_diagnostics_suggest_relaxing_episode_filters_when_filtered_out(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Kanon Batch [1080p][CHS]",
+                url="https://example.test/kanon-batch",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Kanon", episodes=["21"]),
+        )
+
+        self.assertEqual(result.candidates, [])
+        self.assertIn(
+            "可能是集数解析失败，可尝试清空集数后查看候选，或尝试合集 / 整季资源。",
+            result.diagnostics.suggestions,
+        )
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_diagnostics_suggest_relaxing_subtitle_filters(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Example Anime - 01 [1080p][RAW]",
+                url="https://example.test/raw-only",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime", subtitle_type="embedded"),
+        )
+
+        self.assertEqual(result.candidates, [])
+        self.assertIn(
+            "没有找到符合字幕条件的结果，可尝试改为“不限字幕”。",
+            result.diagnostics.suggestions,
+        )
+
+    @patch("aqsd.title_resolver.search_bangumi_titles")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_search_uses_bangumi_expanded_queries_for_rss_matching(
+        self,
+        mock_fetch_rss,
+        mock_search_bangumi,
+    ) -> None:
+        from aqsd.bangumi import BangumiTitleMetadata
+
+        mock_search_bangumi.return_value = [
+            BangumiTitleMetadata(
+                subject_id=1,
+                name="Angel Beats!",
+                name_cn="天使的心跳",
+                aliases=["Angel Beats!", "天使的心跳", "エンジェルビーツ"],
+            )
+        ]
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] Angel Beats! - 01 [1080p][CHS]",
+                url="https://example.test/ab-1",
+                source="mock",
+            )
+        ]
+
+        result = discover_search_candidates(_build_bangumi_search_config(), SearchRequest(query="天使的心跳"))
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertIn("Angel Beats!", result.diagnostics.expanded_queries)
+
+    @patch("aqsd.discovery.fetch_torznab_candidates")
+    @patch("aqsd.discovery.fetch_nyaa_candidates")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_only_searches_eligible_queries_from_selected_bangumi_subject(
+        self,
+        mock_fetch_rss,
+        mock_fetch_nyaa_candidates,
+        mock_fetch_torznab_candidates,
+    ) -> None:
+        mock_fetch_rss.return_value = []
+        mock_fetch_nyaa_candidates.return_value = []
+        mock_fetch_torznab_candidates.return_value = []
+        request = SearchRequest(
+            query="上伊那牡丹，酒醉身姿似百合花般",
+            expanded_queries=[
+                "上伊那牡丹，酒醉身姿似百合花般",
+                "上伊那ぼたん、酔へる姿は百合の花",
+                "上伊那牡丹，醉姿如百合",
+                "Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
+                "Kamiina Botan, the Drunken Appearance Is a Lily Flower",
+            ],
+            expanded_query_details=[
+                ExpandedQueryDetail(text="上伊那牡丹，酒醉身姿似百合花般", source="original", confidence=0.6, language="zh", search_role="secondary"),
+                ExpandedQueryDetail(text="上伊那ぼたん、酔へる姿は百合の花", source="bangumi", confidence=0.94, language="ja", subject_id=101, search_role="primary"),
+                ExpandedQueryDetail(text="上伊那牡丹，醉姿如百合", source="bangumi", confidence=0.94, language="zh", subject_id=101, search_role="primary"),
+                ExpandedQueryDetail(text="Kamiina Botan, Yoeru Sugata wa Yuri no Hana", source="bangumi", confidence=0.94, language="romaji", subject_id=101, search_role="primary"),
+                ExpandedQueryDetail(text="Kamiina Botan, the Drunken Appearance Is a Lily Flower", source="bangumi", confidence=0.82, language="en", subject_id=101, search_role="primary"),
+                ExpandedQueryDetail(text="The Upper Classman", source="bangumi", confidence=0.20, language="en", subject_id=102, search_role="display_only", search_eligible=False),
+                ExpandedQueryDetail(text="Joukyuusei", source="bangumi", confidence=0.20, language="romaji", subject_id=102, search_role="display_only", search_eligible=False),
+                ExpandedQueryDetail(text="崖上的波妞", source="bangumi", confidence=0.20, language="zh", subject_id=103, search_role="display_only", search_eligible=False),
+            ],
+        )
+
+        discover_search_candidates(_build_all_search_sources_config(), request)
+
+        nyaa_queries = [call.args[1] for call in mock_fetch_nyaa_candidates.call_args_list]
+        torznab_queries = [call.args[1] for call in mock_fetch_torznab_candidates.call_args_list]
+        self.assertIn("上伊那ぼたん、酔へる姿は百合の花", nyaa_queries)
+        self.assertIn("Kamiina Botan, Yoeru Sugata wa Yuri no Hana", nyaa_queries)
+        self.assertNotIn("上級生", nyaa_queries)
+        self.assertNotIn("The Upper Classman", nyaa_queries)
+        self.assertNotIn("Joukyuusei", nyaa_queries)
+        self.assertNotIn("崖の上のポニョ", torznab_queries)
+        self.assertNotIn("崖上的波妞", torznab_queries)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discovery_keeps_matched_query_evidence_on_candidate(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[SubsPlease] Kamiina Botan, Yoeru Sugata wa Yuri no Hana - 01 [1080p]",
+                url="https://example.test/kamiina-1",
+                source="mock",
+            )
+        ]
+
+        request = SearchRequest(
+            query="上伊那牡丹，酒醉身姿似百合花般",
+            expanded_query_details=[
+                ExpandedQueryDetail(
+                    text="上伊那牡丹，酒醉身姿似百合花般",
+                    source="original",
+                    confidence=0.6,
+                    language="zh",
+                    search_role="secondary",
+                ),
+                ExpandedQueryDetail(
+                    text="Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
+                    source="bangumi",
+                    confidence=0.93,
+                    subject_id=101,
+                    language="romaji",
+                    search_role="primary",
+                ),
+            ],
+            expanded_queries=[
+                "上伊那牡丹，酒醉身姿似百合花般",
+                "Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
+            ],
+        )
+
+        result = discover_search_candidates(_build_config(), request)
+
+        self.assertEqual(len(result.candidates), 1)
+        candidate = result.candidates[0]
+        self.assertEqual(candidate.matched_query, "Kamiina Botan, Yoeru Sugata wa Yuri no Hana")
+        self.assertEqual(candidate.matched_query_source, "bangumi")
+        self.assertEqual(candidate.matched_query_subject_id, 101)
+        self.assertIsNotNone(candidate.title_evidence)
 
 
 if __name__ == "__main__":

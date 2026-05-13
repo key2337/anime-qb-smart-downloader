@@ -62,7 +62,7 @@ class SearchCliTests(unittest.TestCase):
             "active_filters": {},
             "candidate_count_before_filter": 0,
             "candidate_count_after_filter": 0,
-            "suggestions": ['Try running: aqsd resolve-title "Example Anime"'],
+            "suggestions": ["可先尝试解析标题，确认标题扩展是否正确。"],
         }
         defaults.update(overrides)
         return SearchDiagnostics(**defaults)
@@ -160,8 +160,8 @@ class SearchCliTests(unittest.TestCase):
                 sources=["RSS", "Nyaa", "Torznab"],
                 active_filters={"episode": "01", "resolution": "1080p"},
                 suggestions=[
-                    'Try running: aqsd resolve-title "Angel Beats!"',
-                    "Check whether the episode number is correct.",
+                    "可先尝试解析标题，确认标题扩展是否正确。",
+                    "可能是集数解析失败，可尝试清空集数后查看候选，或尝试合集 / 整季资源。",
                 ],
             ),
         )
@@ -195,8 +195,8 @@ class SearchCliTests(unittest.TestCase):
             diagnostics=self._build_diagnostics(
                 active_filters={"group": "LoliHouse", "subtitle": "embedded", "raw_only": True},
                 suggestions=[
-                    "Try removing --group or using a different fansub group.",
-                    "Try relaxing subtitle, RAW, or batch filters.",
+                    "可尝试去掉字幕组限制。",
+                    "没有找到符合字幕条件的结果，可尝试改为“不限字幕”。",
                 ],
             ),
         )
@@ -215,7 +215,7 @@ class SearchCliTests(unittest.TestCase):
         run_search_command(args, _build_config(), out=output)
 
         rendered = output.getvalue()
-        self.assertIn("Try relaxing subtitle, RAW, or batch filters.", rendered)
+        self.assertIn("没有找到符合字幕条件的结果，可尝试改为“不限字幕”。", rendered)
 
     @patch("aqsd.cli.resolve_search_title")
     def test_run_resolve_title_command_displays_expanded_queries(self, mock_resolve_search_title) -> None:
@@ -411,7 +411,7 @@ class SearchCliTests(unittest.TestCase):
                 candidate_count_before_filter=2,
                 candidate_count_after_filter=0,
                 active_filters={"group": "LoliHouse"},
-                suggestions=["Try removing --group or using a different fansub group."],
+                suggestions=["可尝试去掉字幕组限制。"],
             ),
         )
         output = io.StringIO()
@@ -734,6 +734,67 @@ class SearchCliTests(unittest.TestCase):
         mock_qb_cls.return_value.add_torrent.assert_called_once()
         added_url = mock_qb_cls.return_value.add_torrent.call_args.args[0]
         self.assertEqual(added_url, "https://example.test/opm-1")
+
+    @patch("aqsd.cli.resolve_search_title")
+    def test_run_resolve_title_command_can_display_bangumi_expansion(self, mock_resolve_search_title) -> None:
+        mock_resolve_search_title.return_value = TitleResolution(
+            canonical="Angel Beats!",
+            expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
+            source="bangumi",
+            local_alias_matched=False,
+            cache_hit=False,
+            bangumi_enabled=True,
+            bangumi_attempted=True,
+            anilist_enabled=True,
+            anilist_attempted=True,
+        )
+        output = io.StringIO()
+
+        exit_code = run_resolve_title_command(Namespace(query="天使的心跳"), _build_config(), out=output)
+
+        rendered = output.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("source: bangumi", rendered)
+        self.assertIn("bangumi_enabled: yes", rendered)
+        self.assertIn("- Angel Beats!", rendered)
+
+    @patch("aqsd.main.run_download_command")
+    @patch("aqsd.main.run_search_command")
+    @patch("aqsd.api.run_server_command")
+    @patch("aqsd.main.log_config_summary")
+    @patch("aqsd.main.run_once")
+    @patch("aqsd.main.run_dry_run")
+    @patch("aqsd.main.check_connections")
+    @patch("aqsd.main.load_config")
+    @patch("sys.argv", ["aqsd", "--check", "--config", "config.yaml"])
+    def test_main_dispatches_check_and_logs_config_summary(
+        self,
+        mock_load_config,
+        mock_check_connections,
+        mock_run_dry_run,
+        mock_run_once,
+        mock_log_config_summary,
+        mock_run_server_command,
+        mock_run_search_command,
+        mock_run_download_command,
+    ) -> None:
+        from aqsd.main import main
+
+        config = _build_config()
+        mock_load_config.return_value = config
+        mock_check_connections.return_value = True
+
+        with self.assertRaises(SystemExit) as exc:
+            main()
+
+        self.assertEqual(exc.exception.code, 0)
+        mock_log_config_summary.assert_called_once_with(config, config_path="config.yaml")
+        mock_check_connections.assert_called_once_with(config)
+        mock_run_server_command.assert_not_called()
+        mock_run_search_command.assert_not_called()
+        mock_run_download_command.assert_not_called()
+        mock_run_once.assert_not_called()
+        mock_run_dry_run.assert_not_called()
 
 
 if __name__ == "__main__":

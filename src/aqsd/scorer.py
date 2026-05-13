@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from aqsd.models import AnimeRule, Candidate, ScoreBreakdown, ScoreReason
+from aqsd.models import AnimeRule, Candidate, ExpandedQueryDetail, ScoreBreakdown, ScoreReason
 from aqsd.utils import contains_search_keyword, normalize_text
 
 
@@ -106,22 +106,10 @@ def _apply_search_request_reasons(
     search_context: dict[str, Any],
 ) -> None:
     query = str(search_context.get("query") or "").strip()
-    expanded_queries = [str(value) for value in search_context.get("expanded_queries", []) if str(value).strip()]
-    searchable_title = candidate.parsed_title or candidate.title
-    matched_query = next((value for value in expanded_queries if contains_search_keyword(searchable_title, value)), None)
-    if not matched_query and query and contains_search_keyword(searchable_title, query):
-        matched_query = query
-
-    if matched_query:
-        if query and normalize_text(matched_query) != normalize_text(query):
-            _add_reason(
-                breakdown,
-                "title_expanded_query_match",
-                25.0,
-                f"title matched via expanded query: {matched_query}",
-            )
-        else:
-            _add_reason(breakdown, "title_match", 25.0, f"title matched: {matched_query}")
+    matched_detail = _resolve_matched_query_detail(candidate, search_context, query)
+    if matched_detail:
+        delta, code, message = _title_match_reason(matched_detail, query)
+        _add_reason(breakdown, code, delta, message)
 
     if candidate.episode and candidate.episode in set(search_context.get("episodes", [])):
         _add_reason(breakdown, "episode_match", 20.0, f"episode matched: {candidate.episode}")
@@ -144,6 +132,101 @@ def _apply_search_request_reasons(
     min_seeders = int(search_context.get("min_seeders") or 0)
     if min_seeders > 0 and candidate.seeders >= min_seeders:
         _add_reason(breakdown, "min_seeders_match", 5.0, f"meets minimum seeders: {candidate.seeders}")
+
+
+def _resolve_matched_query_detail(
+    candidate: Candidate,
+    search_context: dict[str, Any],
+    query: str,
+) -> ExpandedQueryDetail | None:
+    if candidate.matched_query:
+        return ExpandedQueryDetail(
+            text=candidate.matched_query,
+            source=candidate.matched_query_source or "original",
+            confidence=float(candidate.matched_query_confidence or 1.0),
+            subject_id=candidate.matched_query_subject_id,
+            language=_language_from_evidence(candidate),
+            alias_confidence=float(candidate.matched_query_confidence or 1.0),
+            reason=candidate.title_evidence.reason if candidate.title_evidence else None,
+            search_eligible=True,
+            search_role=_role_from_source(candidate.matched_query_source or "original", float(candidate.matched_query_confidence or 0.60)),
+            search_tier=_role_from_source(candidate.matched_query_source or "original", float(candidate.matched_query_confidence or 0.60)),
+        )
+
+    details = [
+        value
+        for value in search_context.get("expanded_query_details", [])
+        if isinstance(value, ExpandedQueryDetail) and value.search_eligible
+    ]
+    searchable_title = candidate.parsed_title or candidate.title
+    for detail in sorted(details, key=lambda item: (item.confidence, _role_rank(item.search_role)), reverse=True):
+        if contains_search_keyword(searchable_title, detail.text):
+            return detail
+
+    expanded_queries = [str(value) for value in search_context.get("expanded_queries", []) if str(value).strip()]
+    matched_query = next((value for value in expanded_queries if contains_search_keyword(searchable_title, value)), None)
+    if matched_query:
+        confidence = 0.60 if normalize_text(matched_query) == normalize_text(query) else 0.50
+        return ExpandedQueryDetail(
+            text=matched_query,
+            source="original" if normalize_text(matched_query) == normalize_text(query) else "expanded",
+            confidence=confidence,
+            language="unknown",
+            alias_confidence=confidence,
+            search_eligible=True,
+            search_role="secondary",
+            search_tier="secondary",
+        )
+    if query and contains_search_keyword(searchable_title, query):
+        return ExpandedQueryDetail(
+            text=query,
+            source="original",
+            confidence=1.0,
+            language="unknown",
+            alias_confidence=1.0,
+            search_eligible=True,
+            search_role="secondary",
+            search_tier="secondary",
+        )
+    return None
+
+
+def _title_match_reason(detail: ExpandedQueryDetail, query: str) -> tuple[float, str, str]:
+    language_label = detail.language or "unknown"
+    if detail.search_role == "primary" and detail.confidence >= 0.85:
+        return (
+            25.0,
+            "title_resolved_subject_match",
+            f"title matched resolved subject via {language_label} title: {detail.text}",
+        )
+    if detail.confidence >= 0.60:
+        return (
+            12.0,
+            "title_secondary_alias_match",
+            f"title matched secondary alias: {detail.text}",
+        )
+    return (
+        5.0,
+        "title_weak_alias_match",
+        f"weak title match via low-confidence alias: {detail.text}",
+    )
+
+
+def _language_from_evidence(candidate: Candidate) -> str:
+    evidence_type = candidate.title_evidence.type if candidate.title_evidence else ""
+    if "_" in evidence_type:
+        return evidence_type.split("_", 1)[0]
+    return "unknown"
+
+
+def _role_from_source(source: str, confidence: float) -> str:
+    if source in {"bangumi", "anilist", "local"} and confidence >= 0.85:
+        return "primary"
+    return "secondary"
+
+
+def _role_rank(role: str) -> int:
+    return {"primary": 2, "secondary": 1}.get(role, 0)
 
 
 def explain_score_candidate(

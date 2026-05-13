@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_search_candidates, resolve_search_title
-from aqsd.models import Candidate, ScoreBreakdown, SearchDiagnostics
+from aqsd.models import Candidate, ExpandedQueryDetail, ResolvedSubject, ScoreBreakdown, SearchDiagnostics, TitleEvidence
 from aqsd.qbittorrent import QBittorrentClient
 
 
@@ -32,6 +32,7 @@ class SearchPayload(BaseModel):
     group: str | None = None
     raw_only: bool = False
     exclude_batch: bool = False
+    release_mode: str = Field(default="any", pattern="^(any|episode|batch)$")
     limit: int = 20
 
 
@@ -70,7 +71,10 @@ def create_api_app(config: AppConfig):
         return {
             "query": query,
             "expanded_queries": resolution.expanded_queries,
+            "expanded_query_details": [serialize_expanded_query_detail(item) for item in resolution.expanded_query_details],
             "sources": _serialize_title_resolution_sources(resolution),
+            "resolved_subject": serialize_resolved_subject(resolution.resolved_subject),
+            "rejected_subjects": list(resolution.rejected_subjects),
         }
 
     @app.post("/api/search")
@@ -87,12 +91,12 @@ def create_api_app(config: AppConfig):
             groups=[payload.group] if payload.group else [],
             subtitle_type=None if payload.subtitle in (None, "", "any") else payload.subtitle,
             raw_only=payload.raw_only,
+            exclude_batch=payload.exclude_batch,
+            release_mode=payload.release_mode,
             limit=limit,
         )
         result = discover_search_candidates(config, request)
         diagnostics = serialize_diagnostics(result.diagnostics)
-        if payload.exclude_batch:
-            diagnostics["active_filters"]["exclude_batch"] = True
 
         return {
             "query": query,
@@ -121,6 +125,8 @@ def run_server_command(config: AppConfig, *, host: str = DEFAULT_API_HOST, port:
 def build_health_payload(config: AppConfig) -> dict[str, Any]:
     qb_configured = bool(config.qb.base_url.strip())
     qb_status = _probe_qb_status(config) if qb_configured else {"configured": False, "reachable": False}
+    bangumi_enabled = bool(config.metadata_sources.bangumi.enabled)
+    anilist_enabled = bool(config.metadata_sources.anilist.enabled)
     payload = {
         "ok": bool(qb_status.get("reachable")),
         "qbittorrent": qb_status,
@@ -132,8 +138,19 @@ def build_health_payload(config: AppConfig) -> dict[str, Any]:
                 and any(endpoint.enabled for endpoint in config.search_sources.torznab.endpoints)
             ),
         },
+        "metadata_sources": {
+            "bangumi": {
+                "enabled": bangumi_enabled,
+            },
+            "anilist": {
+                "enabled": anilist_enabled,
+            },
+        },
         "anilist": {
-            "enabled": bool(config.metadata_sources.anilist.enabled),
+            "enabled": anilist_enabled,
+        },
+        "bangumi": {
+            "enabled": bangumi_enabled,
         },
     }
     return payload
@@ -160,6 +177,11 @@ def serialize_candidate(candidate: Candidate, rank: int) -> dict[str, Any]:
             "is_raw": candidate.is_raw,
         },
         "breakdown": serialize_breakdown(candidate.breakdown),
+        "matched_query": candidate.matched_query,
+        "matched_query_source": candidate.matched_query_source,
+        "matched_query_subject_id": candidate.matched_query_subject_id,
+        "matched_query_confidence": candidate.matched_query_confidence,
+        "title_evidence": serialize_title_evidence(candidate.title_evidence),
     }
 
 
@@ -174,21 +196,43 @@ def serialize_diagnostics(diagnostics: SearchDiagnostics | None) -> dict[str, An
         return {
             "original_query": "",
             "expanded_queries": [],
+            "expanded_query_details": [],
             "sources": [],
             "active_filters": {},
             "candidate_count_before_filter": None,
             "candidate_count_after_filter": None,
             "suggestions": [],
+            "resolved_subject": None,
+            "rejected_subjects": [],
         }
     return {
         "original_query": diagnostics.original_query,
         "expanded_queries": list(diagnostics.expanded_queries),
+        "expanded_query_details": [serialize_expanded_query_detail(item) for item in diagnostics.expanded_query_details],
         "sources": list(diagnostics.sources),
         "active_filters": dict(diagnostics.active_filters),
         "candidate_count_before_filter": diagnostics.candidate_count_before_filter,
         "candidate_count_after_filter": diagnostics.candidate_count_after_filter,
         "suggestions": list(diagnostics.suggestions),
+        "resolved_subject": serialize_resolved_subject(diagnostics.resolved_subject),
+        "rejected_subjects": list(diagnostics.rejected_subjects),
     }
+
+
+def serialize_expanded_query_detail(detail: ExpandedQueryDetail) -> dict[str, Any]:
+    return asdict(detail)
+
+
+def serialize_resolved_subject(subject: ResolvedSubject | None) -> dict[str, Any] | None:
+    if subject is None:
+        return None
+    return asdict(subject)
+
+
+def serialize_title_evidence(evidence: TitleEvidence | None) -> dict[str, Any] | None:
+    if evidence is None:
+        return None
+    return asdict(evidence)
 
 
 def _probe_qb_status(config: AppConfig) -> dict[str, Any]:
@@ -219,11 +263,17 @@ def _serialize_datetime(value: datetime | None) -> str | None:
 
 
 def _serialize_title_resolution_sources(resolution: Any) -> list[str]:
+    explicit_sources = getattr(resolution, "sources", None)
+    if explicit_sources:
+        return list(explicit_sources)
+
     sources: list[str] = []
     if getattr(resolution, "local_alias_matched", False):
         sources.append("local_aliases")
     if getattr(resolution, "cache_hit", False):
         sources.append("cache")
+    if getattr(resolution, "source", "") in {"bangumi", "bangumi-cache"} or getattr(resolution, "bangumi_attempted", False):
+        sources.append("bangumi")
     if getattr(resolution, "source", "") in {"anilist", "anilist-cache"} or getattr(resolution, "anilist_attempted", False):
         sources.append("anilist")
     if not sources:

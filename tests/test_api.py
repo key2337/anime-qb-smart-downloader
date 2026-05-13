@@ -31,6 +31,7 @@ def _build_config() -> AppConfig:
                 "torznab": {"enabled": False, "endpoints": []},
             },
             "metadata_sources": {
+                "bangumi": {"enabled": True},
                 "anilist": {"enabled": True},
             },
         }
@@ -52,7 +53,7 @@ class ApiTests(unittest.TestCase):
         response = client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("AQSD Search Workbench", response.text)
+        self.assertIn("AQSD 动漫搜索工作台", response.text)
 
     def test_app_js_can_be_accessed(self) -> None:
         client = TestClient(create_api_app(self.config))
@@ -60,7 +61,10 @@ class ApiTests(unittest.TestCase):
         response = client.get("/app.js")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("handleSearch", response.text)
+        self.assertIn("解析标题", response.text)
+        self.assertIn("展开详情", response.text)
+        self.assertIn("metadataStatusLabel", response.text)
+        self.assertIn("Bangumi", response.text)
 
     def test_style_css_can_be_accessed(self) -> None:
         client = TestClient(create_api_app(self.config))
@@ -81,14 +85,20 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertIn("ok", payload)
         self.assertTrue(payload["ok"])
+        self.assertTrue(payload["bangumi"]["enabled"])
+        self.assertTrue(payload["anilist"]["enabled"])
+        self.assertTrue(payload["metadata_sources"]["bangumi"]["enabled"])
+        self.assertTrue(payload["metadata_sources"]["anilist"]["enabled"])
 
     @patch("aqsd.api.resolve_search_title")
-    def test_resolve_title_returns_expanded_queries(self, mock_resolve_search_title) -> None:
+    def test_resolve_title_returns_bangumi_expanded_queries(self, mock_resolve_search_title) -> None:
         mock_resolve_search_title.return_value = Mock(
             expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
-            source="anilist",
+            source="bangumi",
+            sources=["bangumi", "anilist"],
             local_alias_matched=False,
             cache_hit=False,
+            bangumi_attempted=True,
             anilist_attempted=True,
         )
         client = TestClient(create_api_app(self.config))
@@ -98,6 +108,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["expanded_queries"][0], "天使的心跳")
+        self.assertIn("Angel Beats!", payload["expanded_queries"])
+        self.assertIn("bangumi", payload["sources"])
         self.assertIn("anilist", payload["sources"])
 
     def test_resolve_title_empty_query_returns_error(self) -> None:
@@ -149,6 +161,52 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(payload["candidates"][0]["breakdown"])
 
     @patch("aqsd.api.discover_search_candidates")
+    def test_search_accepts_release_mode_and_exposes_it_in_diagnostics(self, mock_discover_search_candidates) -> None:
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[],
+            diagnostics=SearchDiagnostics(
+                original_query="Example Anime",
+                expanded_queries=["Example Anime"],
+                sources=["RSS"],
+                active_filters={"release_mode": "batch"},
+                candidate_count_before_filter=2,
+                candidate_count_after_filter=0,
+                suggestions=["也可尝试搜索合集 / 整季资源。"],
+            ),
+        )
+        client = TestClient(create_api_app(self.config))
+
+        response = client.post("/api/search", json={"query": "Example Anime", "release_mode": "batch"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["diagnostics"]["active_filters"]["release_mode"], "batch")
+        request = mock_discover_search_candidates.call_args.args[1]
+        self.assertEqual(request.release_mode, "batch")
+
+    @patch("aqsd.api.discover_search_candidates")
+    def test_search_passes_exclude_batch_flag_into_request(self, mock_discover_search_candidates) -> None:
+        mock_discover_search_candidates.return_value = DiscoveryResult(
+            candidates=[],
+            diagnostics=SearchDiagnostics(
+                original_query="Example Anime",
+                expanded_queries=["Example Anime"],
+                sources=["RSS"],
+                active_filters={"release_mode": "any", "exclude_batch": True},
+                candidate_count_before_filter=1,
+                candidate_count_after_filter=0,
+                suggestions=["可尝试改为不限资源类型。"],
+            ),
+        )
+        client = TestClient(create_api_app(self.config))
+
+        response = client.post("/api/search", json={"query": "Example Anime", "exclude_batch": True})
+
+        self.assertEqual(response.status_code, 200)
+        request = mock_discover_search_candidates.call_args.args[1]
+        self.assertTrue(request.exclude_batch)
+        self.assertTrue(response.json()["diagnostics"]["active_filters"]["exclude_batch"])
+
+    @patch("aqsd.api.discover_search_candidates")
     def test_search_without_candidates_returns_diagnostics(self, mock_discover_search_candidates) -> None:
         mock_discover_search_candidates.return_value = DiscoveryResult(
             candidates=[],
@@ -159,7 +217,7 @@ class ApiTests(unittest.TestCase):
                 active_filters={"episode": "01"},
                 candidate_count_before_filter=0,
                 candidate_count_after_filter=0,
-                suggestions=['Try running: aqsd resolve-title "天使的心跳"'],
+                suggestions=["可能是集数解析失败，可尝试清空集数后查看候选，或尝试合集 / 整季资源。"],
             ),
         )
         client = TestClient(create_api_app(self.config))
@@ -179,6 +237,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("query must not be empty", response.json()["detail"])
+
 
 class ApiCommandTests(unittest.TestCase):
     def test_serialize_candidate_includes_breakdown(self) -> None:

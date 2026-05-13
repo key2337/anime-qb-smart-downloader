@@ -11,7 +11,7 @@ from aqsd.config import load_config
 from aqsd.database import Database
 from aqsd.dryrun import run_dry_run
 from aqsd.downloader import run_once
-from aqsd.healthcheck import check_connections
+from aqsd.healthcheck import check_connections, log_config_summary
 from aqsd.monitor import DownloadMonitor
 from aqsd.qbittorrent import QBittorrentClient
 
@@ -125,6 +125,7 @@ def main() -> None:
         return
 
     if args.check:
+        log_config_summary(config, config_path=args.config)
         raise SystemExit(0 if check_connections(config) else 1)
 
     if args.dry_run:

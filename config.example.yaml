@@ -31,6 +31,10 @@ search_sources:
         timeout_seconds: 15
 
 metadata_sources:
+  bangumi:
+    enabled: true
+    timeout_seconds: 8
+    max_results: 5
   anilist:
     enabled: true
     endpoint: "https://graphql.anilist.co"
@@ -79,6 +83,13 @@ title_aliases:
       - "Ruri no Houseki"
       - "Ruri Rocks"
       - "瑠璃の宝石"
+
+  - canonical: "Pokémon"
+    aliases:
+      - "宝可梦"
+      - "Pokemon"
+      - "Pocket Monsters"
+      - "ポケットモンスター"
 
 profiles:
   fastest:

@@ -63,3 +63,19 @@ def check_connections(config: AppConfig) -> bool:
     qb_ok = check_qb_connection(config)
     rss_ok = check_rss_connections(config)
     return qb_ok and rss_ok
+
+
+def log_config_summary(config: AppConfig, *, config_path: str | None = None) -> None:
+    if config_path:
+        logger.info("Config loaded: path={}", config_path)
+    _log_metadata_source_status(config)
+
+
+def _log_metadata_source_status(config: AppConfig) -> None:
+    logger.info("Metadata sources:")
+    logger.info("  Bangumi: {}", _enabled_label(config.metadata_sources.bangumi.enabled))
+    logger.info("  AniList: {}", _enabled_label(config.metadata_sources.anilist.enabled))
+
+
+def _enabled_label(enabled: bool) -> str:
+    return "enabled" if enabled else "disabled"

@@ -8,14 +8,14 @@ from loguru import logger
 from aqsd.config import AppConfig
 from aqsd.database import Database
 from aqsd.matcher import match_candidate
-from aqsd.models import AnimeRule, Candidate, SearchDiagnostics
+from aqsd.models import AnimeRule, Candidate, ExpandedQueryDetail, SearchDiagnostics, TitleEvidence
 from aqsd.nyaa import fetch_nyaa_candidates
 from aqsd.parser import parse_candidate
 from aqsd.rss import fetch_rss
 from aqsd.scorer import score_candidate
 from aqsd.title_resolver import TitleResolution, resolve_title_query
 from aqsd.torznab import fetch_torznab_candidates
-from aqsd.utils import contains_all_keywords, contains_any_search_keyword, normalize_text
+from aqsd.utils import contains_any_search_keyword, contains_search_keyword, normalize_text
 
 
 @dataclass(slots=True)
@@ -34,11 +34,14 @@ class DiscoveryResult:
 class SearchRequest:
     query: str
     expanded_queries: list[str] = field(default_factory=list)
+    expanded_query_details: list[ExpandedQueryDetail] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
     resolution: str | None = None
     groups: list[str] = field(default_factory=list)
     subtitle_type: str | None = None
     raw_only: bool = False
+    exclude_batch: bool = False
+    release_mode: str = "any"
     min_seeders: int = 0
     limit: int | None = None
 
@@ -115,13 +118,15 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     seen_title_episodes: set[tuple[str, str]] = set()
     attempted_sources: list[str] = []
     title_resolution = resolve_search_title(config, request.query)
-    if not request.expanded_queries:
-        request.expanded_queries.extend(title_resolution.expanded_queries)
+    _hydrate_request_queries(request, title_resolution)
     logger.info("Search queries expanded: {}", ", ".join(request.expanded_queries or [request.query]))
     result.diagnostics = SearchDiagnostics(
         original_query=request.query,
         expanded_queries=list(request.expanded_queries or [request.query]),
+        expanded_query_details=list(request.expanded_query_details),
         active_filters=_build_active_filters(request),
+        resolved_subject=title_resolution.resolved_subject,
+        rejected_subjects=list(title_resolution.rejected_subjects),
     )
 
     for source in config.rss_sources:
@@ -146,7 +151,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     nyaa_settings = config.search_sources.nyaa
     if nyaa_settings.enabled:
         attempted_sources.append("Nyaa")
-        for query in request.expanded_queries or [request.query]:
+        for query in _queries_for_source(request, "nyaa"):
             try:
                 logger.info("Searching Nyaa: {}", query)
                 items = fetch_nyaa_candidates(nyaa_settings, query, limit=request.limit)
@@ -174,7 +179,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
             if not attempted_torznab:
                 attempted_sources.append("Torznab")
                 attempted_torznab = True
-            for query in request.expanded_queries or [request.query]:
+            for query in _queries_for_source(request, "torznab"):
                 try:
                     logger.info("Searching Torznab: endpoint={} query={}", endpoint.name, query)
                     items = fetch_torznab_candidates(endpoint, query, limit=request.limit)
@@ -198,32 +203,49 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
         key=lambda item: (item.score, item.seeders, item.title),
         reverse=True,
     )
+    candidate_count_after_filter = len(result.candidates)
     if request.limit is not None:
         result.candidates = result.candidates[: request.limit]
     if result.diagnostics is not None:
         result.diagnostics.sources = attempted_sources
-        result.diagnostics.candidate_count_after_filter = len(result.candidates)
+        result.diagnostics.candidate_count_after_filter = candidate_count_after_filter
         result.diagnostics.suggestions = _build_search_suggestions(result.diagnostics, config)
 
     return result
 
 
 def resolve_search_title(config: AppConfig, query: str) -> TitleResolution:
+    bangumi_settings = config.metadata_sources.bangumi
     anilist_settings = config.metadata_sources.anilist
-    if not anilist_settings.enabled:
+    if not bangumi_settings.enabled and not anilist_settings.enabled:
         return resolve_title_query(query, config.title_aliases)
 
-    cache = Database(config.app.database) if anilist_settings.cache_enabled else None
+    cache = Database(config.app.database) if bangumi_settings.enabled or anilist_settings.cache_enabled else None
     try:
         return resolve_title_query(
             query,
             config.title_aliases,
+            bangumi_settings=bangumi_settings,
             anilist_settings=anilist_settings,
             cache=cache,
         )
     finally:
         if cache is not None:
             cache.close()
+
+
+def _hydrate_request_queries(request: SearchRequest, resolution: TitleResolution) -> None:
+    if not request.expanded_query_details:
+        request.expanded_query_details.extend(resolution.expanded_query_details)
+    elif not any(normalize_text(detail.text) == normalize_text(request.query) for detail in request.expanded_query_details):
+        request.expanded_query_details.insert(0, ExpandedQueryDetail(text=request.query, source="original", confidence=1.0, alias_confidence=1.0, search_role="secondary", search_tier="secondary"))
+
+    if not request.expanded_queries:
+        request.expanded_queries.extend(
+            detail.text for detail in request.expanded_query_details if detail.search_eligible
+        )
+    if not request.expanded_queries:
+        request.expanded_queries.append(request.query)
 
 
 def _collect_search_matches(
@@ -281,13 +303,22 @@ def _hash_key(candidate: Candidate) -> str | None:
 
 
 def _matches_search_request(candidate: Candidate, request: SearchRequest) -> bool:
-    if request.query:
-        searchable_values = [candidate.parsed_title or candidate.title]
-        queries = request.expanded_queries or [request.query]
-        if not any(contains_any_search_keyword(value, queries) for value in searchable_values):
-            return False
+    matched_detail = _match_query_detail(candidate, request)
+    if request.query and matched_detail is None:
+        return False
+    if matched_detail is not None:
+        _attach_match_evidence(candidate, matched_detail)
 
-    if request.episodes and (candidate.episode or "") not in _normalize_episode_values(request.episodes):
+    if request.exclude_batch and candidate.is_batch:
+        return False
+
+    if request.release_mode == "episode" and candidate.is_batch:
+        return False
+
+    if request.release_mode == "batch" and not candidate.is_batch:
+        return False
+
+    if request.episodes and not _episode_matches_request(candidate, request):
         return False
 
     if request.resolution and (candidate.resolution or "").casefold() != request.resolution.casefold():
@@ -306,6 +337,87 @@ def _matches_search_request(candidate: Candidate, request: SearchRequest) -> boo
         return False
 
     return True
+
+
+def _match_query_detail(candidate: Candidate, request: SearchRequest) -> ExpandedQueryDetail | None:
+    searchable_value = candidate.parsed_title or candidate.title
+    details = request.expanded_query_details or [
+        ExpandedQueryDetail(text=value, source="original", confidence=1.0, alias_confidence=1.0, search_role="secondary", search_tier="secondary")
+        for value in (request.expanded_queries or [request.query])
+        if value
+    ]
+    matched = [detail for detail in details if detail.search_eligible and contains_search_keyword(searchable_value, detail.text)]
+    if matched:
+        matched.sort(key=lambda detail: (detail.confidence, _search_role_rank(detail.search_role), len(normalize_text(detail.text))), reverse=True)
+        return matched[0]
+    if request.query and contains_any_search_keyword(searchable_value, [request.query]):
+        return ExpandedQueryDetail(text=request.query, source="original", confidence=1.0, alias_confidence=1.0, search_role="secondary", search_tier="secondary")
+    return None
+
+
+def _attach_match_evidence(candidate: Candidate, detail: ExpandedQueryDetail) -> None:
+    candidate.matched_query = detail.text
+    candidate.matched_query_source = detail.source
+    candidate.matched_query_subject_id = detail.subject_id
+    candidate.matched_query_confidence = detail.confidence
+    searchable_value = candidate.parsed_title or candidate.title
+    exact = normalize_text(searchable_value) == normalize_text(detail.text)
+    evidence_type = f"{detail.language}_{'exact' if exact else 'near'}_match"
+    candidate.title_evidence = TitleEvidence(
+        type=evidence_type,
+        score=detail.confidence,
+        reason=f"candidate title matched {detail.source} {detail.search_role} query",
+    )
+
+
+def _queries_for_source(request: SearchRequest, source_kind: str) -> list[str]:
+    details = request.expanded_query_details or [
+        ExpandedQueryDetail(text=value, source="original", confidence=1.0, alias_confidence=1.0, search_role="secondary", search_tier="secondary")
+        for value in request.expanded_queries or [request.query]
+    ]
+    eligible = [detail for detail in details if detail.search_eligible]
+    if not eligible:
+        return [request.query]
+
+    if source_kind == "nyaa":
+        language_order = {"romaji": 5, "en": 4, "ja": 3, "zh": 2, "unknown": 1}
+    else:
+        language_order = {"romaji": 5, "en": 4, "zh": 3, "ja": 2, "unknown": 1}
+
+    ranked = sorted(
+        eligible,
+        key=lambda detail: (
+            _search_role_rank(detail.search_role),
+            language_order.get(detail.language, 0),
+            detail.confidence,
+            len(normalize_text(detail.text)),
+        ),
+        reverse=True,
+    )
+    queries: list[str] = []
+    seen: set[str] = set()
+    for detail in ranked:
+        key = detail.text.strip().casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(detail.text)
+    return queries[:6]
+
+
+def _search_role_rank(role: str) -> int:
+    return {"primary": 3, "secondary": 2, "display_only": 1}.get(role, 0)
+
+
+def _episode_matches_request(candidate: Candidate, request: SearchRequest) -> bool:
+    normalized_episodes = _normalize_episode_values(request.episodes)
+    if (candidate.episode or "") in normalized_episodes:
+        return True
+
+    if candidate.is_batch and request.release_mode == "batch":
+        return True
+
+    return False
 
 
 def _score_search_candidate(candidate: Candidate, request: SearchRequest, config: AppConfig) -> None:
@@ -328,11 +440,14 @@ def _score_search_candidate(candidate: Candidate, request: SearchRequest, config
         search_context={
             "query": request.query,
             "expanded_queries": request.expanded_queries,
+            "expanded_query_details": request.expanded_query_details,
             "episodes": _normalize_episode_values(request.episodes),
             "resolution": request.resolution,
             "groups": request.groups,
             "subtitle_type": request.subtitle_type,
             "raw_only": request.raw_only,
+            "exclude_batch": request.exclude_batch,
+            "release_mode": request.release_mode,
             "min_seeders": request.min_seeders,
         },
     )
@@ -358,7 +473,7 @@ def _value_in_normalized_set(value: str | None, candidates: list[str]) -> bool:
 
 
 def _build_active_filters(request: SearchRequest) -> dict[str, object]:
-    filters: dict[str, object] = {}
+    filters: dict[str, object] = {"release_mode": request.release_mode}
     if request.episodes:
         filters["episode"] = ", ".join(request.episodes)
     if request.resolution:
@@ -369,6 +484,8 @@ def _build_active_filters(request: SearchRequest) -> dict[str, object]:
         filters["subtitle"] = request.subtitle_type
     if request.raw_only:
         filters["raw_only"] = True
+    if request.exclude_batch:
+        filters["exclude_batch"] = True
     if request.min_seeders > 0:
         filters["min_seeders"] = request.min_seeders
     if request.limit is not None:
@@ -377,24 +494,36 @@ def _build_active_filters(request: SearchRequest) -> dict[str, object]:
 
 
 def _build_search_suggestions(diagnostics: SearchDiagnostics, config: AppConfig) -> list[str]:
-    suggestions: list[str] = [f'Try running: aqsd resolve-title "{diagnostics.original_query}"']
+    suggestions: list[str] = ["可先尝试解析标题，确认标题扩展是否符合预期。"]
     expanded = diagnostics.expanded_queries or [diagnostics.original_query]
     if len(expanded) <= 1:
-        suggestions.append("Try a different title alias.")
-        suggestions.append("Add a local alias in config.yaml.")
+        suggestions.append("可尝试换一个别名、英文名或日文名重新搜索。")
 
-    if "group" in diagnostics.active_filters:
-        suggestions.append("Try removing --group or using a different fansub group.")
+    before_count = diagnostics.candidate_count_before_filter or 0
+    after_count = diagnostics.candidate_count_after_filter or 0
+    filtered_out = before_count > 0 and after_count == 0
+    no_results = after_count == 0
+
+    if no_results and len(expanded) > 1:
+        suggestions.append("可检查标题扩展结果，挑一个更接近作品名的标题重试。")
+
+    if "subtitle" in diagnostics.active_filters and no_results:
+        suggestions.append("没有找到符合字幕条件的结果，可尝试改为“不限字幕”。")
+    if "group" in diagnostics.active_filters and no_results:
+        suggestions.append("可尝试去掉字幕组限制。")
     if "resolution" in diagnostics.active_filters:
-        suggestions.append("Try a different resolution such as 720p or leaving it unset.")
-    if "episode" in diagnostics.active_filters:
-        suggestions.append("Check whether the episode number is correct.")
-    if any(key in diagnostics.active_filters for key in ("subtitle", "raw_only")):
-        suggestions.append("Try relaxing subtitle, RAW, or batch filters.")
+        suggestions.append("可尝试放宽分辨率条件，例如改为 1080p、720p 或不限制。")
+    if "episode" in diagnostics.active_filters and filtered_out:
+        suggestions.append("可能是集数解析失败，可尝试清空集数后查看候选，或尝试合集 / 整季资源。")
+    if diagnostics.active_filters.get("release_mode") not in (None, "any") and no_results:
+        suggestions.append("可尝试改为不限资源类型。")
+    if diagnostics.active_filters.get("release_mode") != "batch" and no_results:
+        suggestions.append("也可尝试搜索合集 / 整季资源。")
+    if "raw_only" in diagnostics.active_filters and no_results:
+        suggestions.append("只看 RAW 可能过严，可先取消 RAW 限制。")
 
     if not config.search_sources.nyaa.enabled and not config.search_sources.torznab.enabled:
-        suggestions.append("Check search_sources in config.yaml.")
-        suggestions.append("Enable Nyaa or Torznab for active search.")
+        suggestions.append("可检查 config.yaml 的 search_sources，按需启用 Nyaa 或 Torznab。")
 
     deduped: list[str] = []
     for suggestion in suggestions:

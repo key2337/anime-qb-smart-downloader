@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from aqsd.models import AnimeRule, Candidate, ScoreBreakdown, ScoreReason
+from aqsd.models import AnimeRule, Candidate, ExpandedQueryDetail, ScoreBreakdown, ScoreReason, TitleEvidence
 from aqsd.scorer import explain_score_candidate, score_candidate
 
 
@@ -116,6 +116,75 @@ class ScorerTests(unittest.TestCase):
         self.assertEqual(candidate.breakdown.total, candidate.score)
         self.assertTrue(candidate.breakdown.reasons)
         self.assertIn("title matched", candidate.score_reasons[0])
+
+    def test_resolved_subject_match_scores_higher_than_weak_alias(self) -> None:
+        strong_candidate = Candidate(
+            title="Kamiina Botan, Yoeru Sugata wa Yuri no Hana - 01",
+            url="https://example.test/strong",
+            source="nyaa",
+            matched_query="Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
+            matched_query_source="bangumi",
+            matched_query_confidence=0.93,
+            title_evidence=TitleEvidence(
+                type="romaji_near_match",
+                score=0.93,
+                reason="candidate title matched bangumi primary query",
+            ),
+        )
+        weak_candidate = Candidate(
+            title="Kamiina Botan, Yoeru Sugata wa Yuri no Hana - 01",
+            url="https://example.test/weak",
+            source="nyaa",
+            matched_query="上伊那牡丹",
+            matched_query_source="original",
+            matched_query_confidence=0.45,
+            title_evidence=TitleEvidence(
+                type="zh_near_match",
+                score=0.45,
+                reason="candidate title matched weak alias",
+            ),
+        )
+
+        strong_score = score_candidate(
+            strong_candidate,
+            self.rule,
+            {},
+            now=self.now,
+            search_context={
+                "query": "上伊那牡丹，酒醉身姿似百合花般",
+                "expanded_query_details": [
+                    ExpandedQueryDetail(
+                        text="Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
+                        source="bangumi",
+                        confidence=0.93,
+                        language="romaji",
+                        search_role="primary",
+                    )
+                ],
+            },
+        )
+        weak_score = score_candidate(
+            weak_candidate,
+            self.rule,
+            {},
+            now=self.now,
+            search_context={
+                "query": "上伊那牡丹，酒醉身姿似百合花般",
+                "expanded_query_details": [
+                    ExpandedQueryDetail(
+                        text="上伊那牡丹",
+                        source="original",
+                        confidence=0.45,
+                        language="zh",
+                        search_role="secondary",
+                    )
+                ],
+            },
+        )
+
+        self.assertGreater(strong_score, weak_score)
+        self.assertTrue(any("resolved subject" in reason.message for reason in strong_candidate.breakdown.reasons))
+        self.assertTrue(any("weak title match" in reason.message for reason in weak_candidate.breakdown.reasons))
 
 
 if __name__ == "__main__":

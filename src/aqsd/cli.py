@@ -121,6 +121,8 @@ def run_resolve_title_command(args: argparse.Namespace, config: AppConfig, out: 
     print(f"canonical: {resolution.canonical}", file=stream)
     print(f"source: {resolution.source}", file=stream)
     print(f"local_alias_matched: {'yes' if resolution.local_alias_matched else 'no'}", file=stream)
+    print(f"bangumi_enabled: {'yes' if resolution.bangumi_enabled else 'no'}", file=stream)
+    print(f"bangumi_attempted: {'yes' if resolution.bangumi_attempted else 'no'}", file=stream)
     print(f"anilist_enabled: {'yes' if resolution.anilist_enabled else 'no'}", file=stream)
     print(f"anilist_attempted: {'yes' if resolution.anilist_attempted else 'no'}", file=stream)
     print(f"cache_hit: {'yes' if resolution.cache_hit else 'no'}", file=stream)
