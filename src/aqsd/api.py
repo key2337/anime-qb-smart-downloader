@@ -72,8 +72,11 @@ def create_api_app(config: AppConfig):
             "query": query,
             "expanded_queries": resolution.expanded_queries,
             "expanded_query_details": [serialize_expanded_query_detail(item) for item in resolution.expanded_query_details],
+            "resolution_status": resolution.resolution_status,
+            "needs_review": resolution.needs_review,
             "sources": _serialize_title_resolution_sources(resolution),
             "resolved_subject": serialize_resolved_subject(resolution.resolved_subject),
+            "candidate_subjects": list(resolution.candidate_subjects),
             "rejected_subjects": list(resolution.rejected_subjects),
         }
 
@@ -197,24 +200,30 @@ def serialize_diagnostics(diagnostics: SearchDiagnostics | None) -> dict[str, An
             "original_query": "",
             "expanded_queries": [],
             "expanded_query_details": [],
+            "resolution_status": "unresolved",
+            "needs_review": False,
             "sources": [],
             "active_filters": {},
             "candidate_count_before_filter": None,
             "candidate_count_after_filter": None,
             "suggestions": [],
             "resolved_subject": None,
+            "candidate_subjects": [],
             "rejected_subjects": [],
         }
     return {
         "original_query": diagnostics.original_query,
         "expanded_queries": list(diagnostics.expanded_queries),
         "expanded_query_details": [serialize_expanded_query_detail(item) for item in diagnostics.expanded_query_details],
+        "resolution_status": diagnostics.resolution_status,
+        "needs_review": diagnostics.needs_review,
         "sources": list(diagnostics.sources),
         "active_filters": dict(diagnostics.active_filters),
         "candidate_count_before_filter": diagnostics.candidate_count_before_filter,
         "candidate_count_after_filter": diagnostics.candidate_count_after_filter,
         "suggestions": list(diagnostics.suggestions),
         "resolved_subject": serialize_resolved_subject(diagnostics.resolved_subject),
+        "candidate_subjects": list(diagnostics.candidate_subjects),
         "rejected_subjects": list(diagnostics.rejected_subjects),
     }
 

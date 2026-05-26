@@ -120,6 +120,8 @@ def run_resolve_title_command(args: argparse.Namespace, config: AppConfig, out: 
     print(f"query: {args.query}", file=stream)
     print(f"canonical: {resolution.canonical}", file=stream)
     print(f"source: {resolution.source}", file=stream)
+    print(f"resolution_status: {resolution.resolution_status}", file=stream)
+    print(f"needs_review: {'yes' if resolution.needs_review else 'no'}", file=stream)
     print(f"local_alias_matched: {'yes' if resolution.local_alias_matched else 'no'}", file=stream)
     print(f"bangumi_enabled: {'yes' if resolution.bangumi_enabled else 'no'}", file=stream)
     print(f"bangumi_attempted: {'yes' if resolution.bangumi_attempted else 'no'}", file=stream)

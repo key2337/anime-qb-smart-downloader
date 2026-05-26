@@ -124,8 +124,11 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
         original_query=request.query,
         expanded_queries=list(request.expanded_queries or [request.query]),
         expanded_query_details=list(request.expanded_query_details),
+        resolution_status=title_resolution.resolution_status,
+        needs_review=title_resolution.needs_review,
         active_filters=_build_active_filters(request),
         resolved_subject=title_resolution.resolved_subject,
+        candidate_subjects=list(title_resolution.candidate_subjects),
         rejected_subjects=list(title_resolution.rejected_subjects),
     )
 

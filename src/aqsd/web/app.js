@@ -73,12 +73,15 @@ async function handleResolveTitle() {
       original_query: query,
       expanded_queries: payload.expanded_queries || [],
       expanded_query_details: payload.expanded_query_details || [],
+      resolution_status: payload.resolution_status || "unresolved",
+      needs_review: Boolean(payload.needs_review),
       sources: payload.sources || [],
       active_filters: {},
       candidate_count_before_filter: null,
       candidate_count_after_filter: null,
       suggestions: ["可先确认这里的标题扩展是否符合预期。"],
       resolved_subject: payload.resolved_subject || null,
+      candidate_subjects: payload.candidate_subjects || [],
       rejected_subjects: payload.rejected_subjects || [],
     });
   } catch (error) {
@@ -292,13 +295,27 @@ function renderDiagnostics(diagnostics, candidates = []) {
         </div>
       </div>
       ${filteredOut ? renderRelaxHints() : ""}
+      ${renderResolutionStatus(diagnostics)}
       ${renderResolvedSubject(diagnostics.resolved_subject)}
+      ${renderRejectedSubjects("候选 / 歧义 subject", diagnostics.candidate_subjects)}
       ${renderKeyValueList("尝试过的标题", diagnostics.expanded_queries)}
       ${renderExpandedQueryDetailList("标题扩展详情", diagnostics.expanded_query_details)}
       ${renderRejectedSubjects("已拒绝的 subject", diagnostics.rejected_subjects)}
       ${renderKeyValueList("搜索来源", diagnostics.sources)}
       ${renderObjectList("当前过滤条件", diagnostics.active_filters)}
       ${renderKeyValueList("建议", diagnostics.suggestions)}
+    </div>
+  `;
+}
+
+function renderResolutionStatus(diagnostics) {
+  const status = diagnostics && diagnostics.resolution_status ? diagnostics.resolution_status : "unresolved";
+  const needsReview = Boolean(diagnostics && diagnostics.needs_review);
+  return `
+    <div class="section-label">解析状态</div>
+    <div class="parsed-grid">
+      <div>resolution_status: ${escapeHtml(formatValue(status))}</div>
+      <div>needs_review: ${needsReview ? "鏄? : "鍚?}</div>
     </div>
   `;
 }

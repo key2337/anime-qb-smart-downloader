@@ -9,6 +9,7 @@ from aqsd.bangumi import BangumiTitleMetadata
 from aqsd.title_resolver import (
     ANILIST_CACHE_SOURCE,
     BANGUMI_CACHE_SOURCE,
+    TITLE_CACHE_SCHEMA_VERSION,
     contains_cjk,
     resolve_title_query,
 )
@@ -170,7 +171,7 @@ class TitleResolverTests(unittest.TestCase):
     @patch("aqsd.title_resolver.search_bangumi_titles")
     def test_bangumi_cache_hit_skips_network_request(self, mock_search_bangumi) -> None:
         cached_payload = {
-            "schema_version": 2,
+            "schema_version": TITLE_CACHE_SCHEMA_VERSION,
             "query": "天使的心跳",
             "source": "bangumi",
             "created_at": "2026-05-13T00:00:00+00:00",
@@ -407,7 +408,7 @@ class TitleResolverTests(unittest.TestCase):
         cache = _FakeCache(
             metadata_by_source={
                 BANGUMI_CACHE_SOURCE: {
-                    "schema_version": 2,
+                    "schema_version": TITLE_CACHE_SCHEMA_VERSION,
                     "query": "尖帽子的魔法工房",
                     "source": "bangumi",
                     "created_at": "2026-05-13T00:00:00+00:00",
@@ -534,6 +535,158 @@ class TitleResolverTests(unittest.TestCase):
             detail_map['Megami "Isekai Tensei Nani ni Naritai Desuka" Ore "Yuusha no Rokkotsu de"'].language,
             "romaji",
         )
+
+    @patch("aqsd.title_resolver.search_bangumi_titles")
+    def test_medium_confidence_clear_margin_accepts_dress_up_darling(self, mock_search_bangumi) -> None:
+        mock_search_bangumi.return_value = [
+            BangumiTitleMetadata(
+                subject_id=333158,
+                name="その着せ替え人形は恋をする",
+                name_cn="更衣人偶坠入爱河",
+                aliases=["My Dress-Up Darling"],
+            ),
+            BangumiTitleMetadata(
+                subject_id=398951,
+                name="その着せ替え人形は恋をする Season 2",
+                name_cn="更衣人偶坠入爱河 第二季",
+                aliases=["My Dress-Up Darling Season 2"],
+            ),
+            BangumiTitleMetadata(
+                subject_id=9731,
+                name="恋風",
+                name_cn="恋风",
+                aliases=["Koi Kaze"],
+            ),
+        ]
+
+        result = resolve_title_query(
+            "恋上更衣人偶",
+            [],
+            bangumi_settings=_BangumiSettings(enabled=True),
+            anilist_settings=_AniListSettings(enabled=False),
+        )
+
+        self.assertEqual(result.resolution_status, "resolved_medium_confidence")
+        self.assertFalse(result.needs_review)
+        self.assertIsNotNone(result.resolved_subject)
+        self.assertEqual(result.resolved_subject.subject_id, 333158)
+        self.assertEqual(result.resolved_subject.confidence_level, "medium")
+        self.assertIn("その着せ替え人形は恋をする", result.expanded_queries)
+        self.assertIn("My Dress-Up Darling", result.expanded_queries)
+        self.assertNotEqual(result.resolved_subject.subject_id, 398951)
+        self.assertTrue(any(item.get("subject_id") == 398951 for item in result.candidate_subjects))
+
+    @patch("aqsd.title_resolver.search_bangumi_titles")
+    def test_ambiguous_close_unrelated_candidates_does_not_auto_accept(self, mock_search_bangumi) -> None:
+        mock_search_bangumi.return_value = [
+            BangumiTitleMetadata(subject_id=1, name="Fate/stay night", name_cn="命运之夜", aliases=["Fate/stay night"]),
+            BangumiTitleMetadata(subject_id=2, name="Fate/Zero", name_cn="命运/零", aliases=["Fate/Zero"]),
+            BangumiTitleMetadata(subject_id=3, name="Fate/Grand Order", name_cn="命运-冠位指定", aliases=["Fate/Grand Order"]),
+        ]
+
+        result = resolve_title_query(
+            "Fate",
+            [],
+            bangumi_settings=_BangumiSettings(enabled=True),
+            anilist_settings=_AniListSettings(enabled=False),
+        )
+
+        self.assertEqual(result.resolution_status, "ambiguous")
+        self.assertTrue(result.needs_review)
+        self.assertIsNone(result.resolved_subject)
+        self.assertEqual(result.expanded_queries, ["Fate"])
+        self.assertEqual([detail.text for detail in result.expanded_query_details], ["Fate"])
+        self.assertTrue(result.candidate_subjects)
+
+    @patch("aqsd.title_resolver.search_bangumi_titles")
+    def test_low_confidence_unresolved_original_only(self, mock_search_bangumi) -> None:
+        mock_search_bangumi.return_value = [
+            BangumiTitleMetadata(subject_id=10, name="Another Show", name_cn="另一个作品", aliases=["Another Show"]),
+            BangumiTitleMetadata(subject_id=11, name="Completely Different", name_cn="完全无关", aliases=["Completely Different"]),
+        ]
+
+        result = resolve_title_query(
+            "恋上更衣人偶",
+            [],
+            bangumi_settings=_BangumiSettings(enabled=True),
+            anilist_settings=_AniListSettings(enabled=False),
+        )
+
+        self.assertEqual(result.resolution_status, "unresolved")
+        self.assertFalse(result.needs_review)
+        self.assertIsNone(result.resolved_subject)
+        self.assertEqual(result.expanded_queries, ["恋上更衣人偶"])
+
+    @patch("aqsd.title_resolver.search_bangumi_titles")
+    def test_high_confidence_still_accepts(self, mock_search_bangumi) -> None:
+        mock_search_bangumi.return_value = [
+            BangumiTitleMetadata(
+                subject_id=20,
+                name="葬送のフリーレン",
+                name_cn="葬送的芙莉莲",
+                aliases=["Sousou no Frieren", "Frieren: Beyond Journey's End"],
+            )
+        ]
+
+        result = resolve_title_query(
+            "葬送的芙莉莲",
+            [],
+            bangumi_settings=_BangumiSettings(enabled=True),
+            anilist_settings=_AniListSettings(enabled=False),
+        )
+
+        self.assertEqual(result.resolution_status, "resolved_high_confidence")
+        self.assertIsNotNone(result.resolved_subject)
+        self.assertEqual(result.resolved_subject.subject_id, 20)
+        self.assertEqual(result.resolved_subject.confidence_level, "high")
+        self.assertIn("葬送のフリーレン", result.expanded_queries)
+
+    @patch("aqsd.title_resolver.search_bangumi_titles")
+    def test_kamiina_pollution_regression_keeps_old_aliases_out(self, mock_search_bangumi) -> None:
+        mock_search_bangumi.return_value = [
+            BangumiTitleMetadata(
+                subject_id=101,
+                name="上伊那ぼたん、酔へる姿は百合の花",
+                name_cn="上伊那牡丹，醉姿如百合",
+                aliases=[
+                    "Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
+                    "Kamiina Botan, the Drunken Appearance Is a Lily Flower",
+                ],
+            ),
+            BangumiTitleMetadata(
+                subject_id=102,
+                name="上級生",
+                name_cn="The Upper Classman",
+                aliases=["The Upper Classman", "Joukyuusei"],
+            ),
+            BangumiTitleMetadata(
+                subject_id=103,
+                name="みんなのうた",
+                name_cn="上前线",
+                aliases=["Minna no Uta", "上前线"],
+            ),
+            BangumiTitleMetadata(
+                subject_id=104,
+                name="崖の上のポニョ",
+                name_cn="崖上的波妞",
+                aliases=["崖上的波妞"],
+            ),
+        ]
+
+        result = resolve_title_query(
+            "上伊那牡丹，酒醉身姿似百合花般",
+            [],
+            bangumi_settings=_BangumiSettings(enabled=True),
+            anilist_settings=_AniListSettings(enabled=False),
+        )
+
+        self.assertNotIn("上級生", result.expanded_queries)
+        self.assertNotIn("The Upper Classman", result.expanded_queries)
+        self.assertNotIn("Minna no Uta", result.expanded_queries)
+        self.assertNotIn("Joukyuusei", result.expanded_queries)
+        self.assertNotIn("上前线", result.expanded_queries)
+        self.assertNotIn("崖の上のポニョ", result.expanded_queries)
+        self.assertNotIn("崖上的波妞", result.expanded_queries)
 
 
 if __name__ == "__main__":

@@ -94,8 +94,14 @@ class ApiTests(unittest.TestCase):
     def test_resolve_title_returns_bangumi_expanded_queries(self, mock_resolve_search_title) -> None:
         mock_resolve_search_title.return_value = Mock(
             expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
+            expanded_query_details=[],
+            resolution_status="resolved_high_confidence",
+            needs_review=False,
             source="bangumi",
             sources=["bangumi", "anilist"],
+            resolved_subject=None,
+            candidate_subjects=[],
+            rejected_subjects=[],
             local_alias_matched=False,
             cache_hit=False,
             bangumi_attempted=True,

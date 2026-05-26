@@ -17,11 +17,12 @@ ANILIST_CACHE_SOURCE = "anilist-v3"
 BANGUMI_CACHE_SOURCE = "bangumi-v2"
 BANGUMI_CACHE_TTL_DAYS = 30
 MAX_EXPANDED_QUERIES = 12
-BANGUMI_HIGH_CONFIDENCE_THRESHOLD = 0.82
-BANGUMI_MIN_CONFIDENCE_THRESHOLD = 0.58
-BANGUMI_MIN_MARGIN = 0.08
+BANGUMI_HIGH_CONFIDENCE_THRESHOLD = 0.70
+BANGUMI_MEDIUM_CONFIDENCE_THRESHOLD = 0.50
+BANGUMI_MIN_MARGIN_TO_NEXT_UNRELATED = 0.20
+BANGUMI_AMBIGUOUS_MARGIN = 0.10
 ORIGINAL_QUERY_CONFIDENCE = 1.0
-TITLE_CACHE_SCHEMA_VERSION = 2
+TITLE_CACHE_SCHEMA_VERSION = 3
 ASCII_ROMAJI_HINTS = {
     "no",
     "wa",
@@ -85,10 +86,13 @@ class TitleResolution:
     canonical: str
     expanded_queries: list[str]
     expanded_query_details: list[ExpandedQueryDetail] = field(default_factory=list)
+    resolution_status: str = "unresolved"
+    needs_review: bool = False
     source: str = "query"
     sources: list[str] = field(default_factory=list)
     year: int | None = None
     resolved_subject: ResolvedSubject | None = None
+    candidate_subjects: list[dict[str, object]] = field(default_factory=list)
     rejected_subjects: list[dict[str, object]] = field(default_factory=list)
     local_alias_matched: bool = False
     cache_hit: bool = False
@@ -110,11 +114,14 @@ class _ProviderResolution:
     used: bool
     aliases: list[str] = field(default_factory=list)
     query_details: list[ExpandedQueryDetail] = field(default_factory=list)
+    resolution_status: str = "unresolved"
+    needs_review: bool = False
     canonical: str | None = None
     source: str = "query"
     sources: list[str] = field(default_factory=list)
     year: int | None = None
     resolved_subject: ResolvedSubject | None = None
+    candidate_subjects: list[dict[str, object]] = field(default_factory=list)
     rejected_subjects: list[dict[str, object]] = field(default_factory=list)
     cache_hit: bool = False
 
@@ -136,6 +143,7 @@ def resolve_title_query(
             canonical=query,
             expanded_queries=[query],
             expanded_query_details=details,
+            resolution_status="unresolved",
             bangumi_enabled=bangumi_enabled,
             anilist_enabled=anilist_enabled,
         )
@@ -148,32 +156,55 @@ def resolve_title_query(
                 canonical=group.canonical,
                 expanded_queries=_project_expanded_queries(details),
                 expanded_query_details=details,
+                resolution_status="resolved_high_confidence",
                 source="local",
                 sources=["local_aliases"],
                 local_alias_matched=True,
+                resolved_subject=ResolvedSubject(
+                    source="local",
+                    subject_id=group.canonical,
+                    canonical=group.canonical,
+                    confidence=0.99,
+                    confidence_level="high",
+                    reason="local title alias",
+                ),
                 bangumi_enabled=bangumi_enabled,
                 anilist_enabled=anilist_enabled,
             )
 
     query_details = [_build_original_query_detail(query)]
+    resolution_status = "unresolved"
+    needs_review = False
     sources: list[str] = []
     canonical = query
     year: int | None = None
     cache_hit = False
     primary_source = "query"
     resolved_subject: ResolvedSubject | None = None
+    candidate_subjects: list[dict[str, object]] = []
     rejected_subjects: list[dict[str, object]] = []
-    provider_order = ["bangumi", "anilist"] if contains_cjk(query) else ["anilist", "bangumi"]
+    provider_order = ["bangumi", "anilist"] if _should_prefer_bangumi_first(query) else ["anilist", "bangumi"]
+    locked_by_ambiguity = False
 
     for provider in provider_order:
+        if locked_by_ambiguity:
+            break
         if provider == "bangumi" and bangumi_enabled and bangumi_settings is not None:
             bangumi_result = _resolve_with_bangumi(query, bangumi_settings, cache=cache)
+            candidate_subjects = _prefer_candidate_subjects(candidate_subjects, bangumi_result.candidate_subjects)
             rejected_subjects.extend(bangumi_result.rejected_subjects)
+            if bangumi_result.resolution_status == "ambiguous":
+                resolution_status = "ambiguous"
+                needs_review = True
+                locked_by_ambiguity = True
+                continue
             if bangumi_result.used:
                 if primary_source == "query":
                     primary_source = bangumi_result.source
                     canonical = bangumi_result.canonical or canonical
                     resolved_subject = bangumi_result.resolved_subject or resolved_subject
+                    resolution_status = bangumi_result.resolution_status or resolution_status
+                    needs_review = bangumi_result.needs_review
                 sources.extend(bangumi_result.sources)
                 query_details = _merge_query_details(query_details, bangumi_result.query_details)
                 cache_hit = cache_hit or bangumi_result.cache_hit
@@ -185,6 +216,8 @@ def resolve_title_query(
                     canonical = anilist_result.canonical or canonical
                     year = anilist_result.year
                     resolved_subject = anilist_result.resolved_subject or resolved_subject
+                    resolution_status = anilist_result.resolution_status or resolution_status
+                    needs_review = anilist_result.needs_review
                 elif year is None and anilist_result.year is not None:
                     year = anilist_result.year
                 sources.extend(anilist_result.sources)
@@ -192,14 +225,21 @@ def resolve_title_query(
                 cache_hit = cache_hit or anilist_result.cache_hit
 
     clean_details = query_details[:MAX_EXPANDED_QUERIES]
+    if resolution_status in {"ambiguous", "unresolved"}:
+        clean_details = [_build_original_query_detail(query)]
+        canonical = query
+        resolved_subject = None
     return TitleResolution(
         canonical=canonical,
         expanded_queries=_project_expanded_queries(clean_details),
         expanded_query_details=clean_details,
+        resolution_status=resolution_status,
+        needs_review=needs_review,
         source=primary_source,
         sources=_dedupe_non_empty(sources),
         year=year,
         resolved_subject=resolved_subject,
+        candidate_subjects=candidate_subjects[:8],
         rejected_subjects=rejected_subjects[:8],
         cache_hit=cache_hit,
         bangumi_enabled=bangumi_enabled,
@@ -217,6 +257,18 @@ def contains_cjk(value: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" or "\u3040" <= char <= "\u30ff" for char in value)
 
 
+def _should_prefer_bangumi_first(query: str) -> bool:
+    if contains_cjk(query):
+        return True
+    normalized = normalize_title_key(query)
+    ascii_tokens = tokenize_ascii_words(query)
+    if len(normalized) <= 2:
+        return True
+    if len(ascii_tokens) <= 1 and normalized in {"fate", "gundam", "pokemon", "lovelive", "ll", "monogatari", "k"}:
+        return True
+    return False
+
+
 def _group_values(group: TitleAliasGroup) -> list[str]:
     return [group.canonical, *group.aliases]
 
@@ -231,6 +283,13 @@ def _dedupe_non_empty(values: Iterable[str]) -> list[str]:
         seen.add(stripped.casefold())
         result.append(stripped)
     return result
+
+
+def _prefer_candidate_subjects(
+    existing: list[dict[str, object]],
+    additions: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    return additions if additions else existing
 
 
 def _build_original_query_detail(query: str) -> ExpandedQueryDetail:
@@ -381,29 +440,17 @@ def _resolve_with_bangumi(query: str, settings: BangumiSettings, *, cache: Metad
         return _ProviderResolution(used=False)
 
     ranked = _rank_bangumi_subjects(query, metadata_results)
-    selected = _select_ranked_bangumi_subject(ranked)
-    rejected_subjects = [
-        {
-            "source": "bangumi",
-            "subject_id": item.metadata.subject_id,
-            "canonical": item.metadata.canonical,
-            "confidence": round(item.score, 3),
-            "reason": item.reason,
-        }
-        for item in ranked[1:]
-    ]
+    candidate_subjects = [_build_ranked_subject_debug_payload(item) for item in ranked[:8]]
+    selected, resolution_status = _select_ranked_bangumi_subject(query, ranked)
+    rejected_subjects = candidate_subjects if resolution_status in {"ambiguous", "unresolved"} else candidate_subjects[1:]
     if selected is None:
-        rejected_subjects.insert(
-            0,
-            {
-                "source": "bangumi",
-                "subject_id": ranked[0].metadata.subject_id,
-                "canonical": ranked[0].metadata.canonical,
-                "confidence": round(ranked[0].score, 3),
-                "reason": f"rejected_low_confidence:{ranked[0].reason}",
-            },
+        return _ProviderResolution(
+            used=False,
+            resolution_status=resolution_status,
+            needs_review=resolution_status == "ambiguous",
+            candidate_subjects=candidate_subjects,
+            rejected_subjects=rejected_subjects[:8],
         )
-        return _ProviderResolution(used=False, rejected_subjects=rejected_subjects[:8])
 
     details = _build_bangumi_query_details(query, selected.metadata, selected.score)
     aliases = _project_expanded_queries(details)
@@ -412,12 +459,13 @@ def _resolve_with_bangumi(query: str, settings: BangumiSettings, *, cache: Metad
         subject_id=selected.metadata.subject_id,
         canonical=selected.metadata.canonical or query,
         confidence=selected.score,
+        confidence_level="high" if resolution_status == "resolved_high_confidence" else "medium",
         reason=selected.reason,
     )
     if cache is not None and not _is_incomplete_alias_set(query, aliases):
         cache.save_title_metadata_cache(
             cache_query,
-            _build_bangumi_cache_payload(query, resolved_subject, details, rejected_subjects),
+            _build_bangumi_cache_payload(query, resolved_subject, details, candidate_subjects, rejected_subjects, resolution_status),
             BANGUMI_CACHE_SOURCE,
             BANGUMI_CACHE_TTL_DAYS,
         )
@@ -425,10 +473,12 @@ def _resolve_with_bangumi(query: str, settings: BangumiSettings, *, cache: Metad
         used=True,
         aliases=aliases,
         query_details=details,
+        resolution_status=resolution_status,
         canonical=selected.metadata.canonical or query,
         source="bangumi",
         sources=["bangumi"],
         resolved_subject=resolved_subject,
+        candidate_subjects=candidate_subjects,
         rejected_subjects=rejected_subjects[:8],
     )
 
@@ -448,6 +498,7 @@ def _resolve_with_anilist(query: str, settings: AniListSettings, *, cache: Metad
                     used=True,
                     aliases=_project_expanded_queries(details),
                     query_details=details,
+                    resolution_status="resolved_medium_confidence",
                     canonical=aliases[1] if len(aliases) > 1 else aliases[0],
                     source="anilist-cache",
                     sources=["cache", "anilist"],
@@ -473,12 +524,14 @@ def _resolve_with_anilist(query: str, settings: AniListSettings, *, cache: Metad
         subject_id=getattr(best, "id", None),
         canonical=best.canonical,
         confidence=min(0.95, max(0.60, _score_metadata_result(query, best) / 320)),
+        confidence_level="medium",
         reason="selected_best_metadata_result",
     )
     return _ProviderResolution(
         used=True,
         aliases=aliases,
         query_details=details,
+        resolution_status="resolved_medium_confidence",
         canonical=best.canonical,
         source="anilist",
         sources=["anilist"],
@@ -508,6 +561,7 @@ def _load_bangumi_structured_cache(query: str, payload: Any) -> _ProviderResolut
     subject_payload = payload.get("resolved_subject")
     resolved_subject = None
     canonical = query
+    resolution_status = str(payload.get("resolution_status") or "resolved_medium_confidence")
     if isinstance(subject_payload, dict):
         canonical = str(subject_payload.get("canonical") or canonical)
         resolved_subject = ResolvedSubject(
@@ -515,16 +569,19 @@ def _load_bangumi_structured_cache(query: str, payload: Any) -> _ProviderResolut
             subject_id=subject_payload.get("subject_id"),
             canonical=canonical,
             confidence=float(subject_payload.get("confidence") or 0.0),
+            confidence_level=subject_payload.get("confidence_level"),
             reason=str(subject_payload.get("reason") or "cached resolved subject"),
         )
     return _ProviderResolution(
         used=True,
         aliases=aliases,
         query_details=details,
+        resolution_status=resolution_status,
         canonical=canonical,
         source="bangumi-cache",
         sources=["cache", "bangumi"],
         resolved_subject=resolved_subject,
+        candidate_subjects=list(payload.get("candidate_subjects") or []),
         rejected_subjects=list(payload.get("rejected_subjects") or []),
         cache_hit=True,
     )
@@ -534,15 +591,19 @@ def _build_bangumi_cache_payload(
     query: str,
     resolved_subject: ResolvedSubject,
     details: list[ExpandedQueryDetail],
+    candidate_subjects: list[dict[str, object]],
     rejected_subjects: list[dict[str, object]],
+    resolution_status: str,
 ) -> dict[str, Any]:
     return {
         "schema_version": TITLE_CACHE_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "source": "bangumi",
         "query": query,
+        "resolution_status": resolution_status,
         "resolved_subject": asdict(resolved_subject),
         "expanded_query_details": [asdict(detail) for detail in details],
+        "candidate_subjects": candidate_subjects[:8],
         "rejected_subjects": rejected_subjects[:8],
     }
 
@@ -596,16 +657,27 @@ def _rank_bangumi_subjects(query: str, metadata_results: list[BangumiTitleMetada
     return ranked
 
 
-def _select_ranked_bangumi_subject(ranked: list[_BangumiRankedSubject]) -> _BangumiRankedSubject | None:
+def _select_ranked_bangumi_subject(query: str, ranked: list[_BangumiRankedSubject]) -> tuple[_BangumiRankedSubject | None, str]:
     if not ranked:
-        return None
+        return None, "unresolved"
     top = ranked[0]
-    second_score = ranked[1].score if len(ranked) > 1 else 0.0
     if top.score >= BANGUMI_HIGH_CONFIDENCE_THRESHOLD:
-        return top
-    if top.score >= BANGUMI_MIN_CONFIDENCE_THRESHOLD and top.score - second_score >= BANGUMI_MIN_MARGIN:
-        return top
-    return None
+        return top, "resolved_high_confidence"
+    if top.score < BANGUMI_MEDIUM_CONFIDENCE_THRESHOLD:
+        return None, "unresolved"
+    next_unrelated = _next_unrelated_ranked_subject(top, ranked[1:])
+    if _is_short_or_generic_query(query) or not _has_subject_match_evidence(query, top.metadata):
+        if next_unrelated is not None and top.score - next_unrelated.score <= BANGUMI_AMBIGUOUS_MARGIN:
+            return None, "ambiguous"
+        return None, "unresolved"
+    if next_unrelated is None:
+        return top, "resolved_medium_confidence"
+    margin = top.score - next_unrelated.score
+    if margin >= BANGUMI_MIN_MARGIN_TO_NEXT_UNRELATED:
+        return top, "resolved_medium_confidence"
+    if margin <= BANGUMI_AMBIGUOUS_MARGIN:
+        return None, "ambiguous"
+    return None, "unresolved"
 
 
 def _score_bangumi_subject(query: str, metadata: BangumiTitleMetadata) -> float:
@@ -639,6 +711,98 @@ def _describe_bangumi_match(query: str, metadata: BangumiTitleMetadata) -> str:
     return f"best_{best_field}_similarity={scores[best_field]:.3f}"
 
 
+def _build_ranked_subject_debug_payload(item: _BangumiRankedSubject) -> dict[str, object]:
+    return {
+        "source": "bangumi",
+        "subject_id": item.metadata.subject_id,
+        "canonical": item.metadata.canonical,
+        "confidence": round(item.score, 3),
+        "reason": item.reason,
+    }
+
+
+def _next_unrelated_ranked_subject(
+    top: _BangumiRankedSubject,
+    others: list[_BangumiRankedSubject],
+) -> _BangumiRankedSubject | None:
+    for other in others:
+        if not _is_likely_same_franchise_or_sequel(top.metadata, other.metadata):
+            return other
+    return None
+
+
+def _is_likely_same_franchise_or_sequel(
+    top_subject: BangumiTitleMetadata,
+    other_subject: BangumiTitleMetadata,
+) -> bool:
+    top_titles = _subject_title_variants(top_subject)
+    other_titles = _subject_title_variants(other_subject)
+    sequel_markers = (
+        "season 2",
+        "season 3",
+        "2nd season",
+        "3rd season",
+        "part 2",
+        "第2期",
+        "第3期",
+        "第二季",
+        "第三季",
+        "第2クール",
+        "第3クール",
+    )
+    for top_title in top_titles:
+        normalized_top = normalize_title_key(top_title)
+        if not normalized_top:
+            continue
+        for other_title in other_titles:
+            normalized_other = normalize_title_key(other_title)
+            if not normalized_other:
+                continue
+            if normalized_top == normalized_other:
+                return True
+            if normalized_other.startswith(normalized_top):
+                suffix = normalized_other[len(normalized_top) :].strip()
+                if suffix and any(marker in suffix for marker in sequel_markers):
+                    return True
+            if normalized_top.startswith(normalized_other):
+                suffix = normalized_top[len(normalized_other) :].strip()
+                if suffix and any(marker in suffix for marker in sequel_markers):
+                    return True
+            if _variant_similarity(top_title, other_title) >= 0.88:
+                return True
+    return False
+
+
+def _subject_title_variants(metadata: BangumiTitleMetadata) -> list[str]:
+    return _dedupe_non_empty([metadata.name_cn or "", metadata.name or "", *metadata.aliases])
+
+
+def _is_short_or_generic_query(query: str) -> bool:
+    normalized = normalize_title_key(query)
+    if not normalized:
+        return True
+    ascii_tokens = tokenize_ascii_words(query)
+    if contains_cjk(query):
+        return len(normalized) <= 2
+    if len(ascii_tokens) <= 1 and len(normalized) <= 5:
+        return True
+    return normalized in {"fate", "gundam", "pokemon", "lovelive", "ll", "monogatari", "k"}
+
+
+def _has_subject_match_evidence(query: str, metadata: BangumiTitleMetadata) -> bool:
+    titles = _subject_title_variants(metadata)
+    if any(_variant_similarity(query, title) >= 0.60 for title in titles):
+        return True
+    query_language = _guess_query_language(query)
+    query_tokens = _extract_core_tokens(query, query_language)
+    if not query_tokens:
+        return False
+    subject_tokens = set()
+    for title in titles:
+        subject_tokens.update(_extract_core_tokens(title, _guess_query_language(title)))
+    return bool(query_tokens & subject_tokens)
+
+
 def _variant_similarity(query: str, value: str) -> float:
     normalized_query = normalize_title_key(query)
     normalized_value = normalize_title_key(value)
@@ -652,6 +816,10 @@ def _variant_similarity(query: str, value: str) -> float:
     if normalized_query in normalized_value or normalized_value in normalized_query:
         if shorter >= 4 and coverage >= 0.55:
             return min(0.96, 0.82 + coverage * 0.12)
+        query_tokens = tokenize_ascii_words(query)
+        value_tokens = tokenize_ascii_words(value)
+        if len(query_tokens) == 1 and query_tokens[0] in set(value_tokens) and len(query_tokens[0]) >= 4:
+            return max(0.56, 0.42 + coverage * 0.20)
         return max(0.30, 0.36 + coverage * 0.20)
     sequence_ratio = SequenceMatcher(None, normalized_query, normalized_value).ratio()
     query_tokens = tokenize_ascii_words(query)
@@ -660,6 +828,12 @@ def _variant_similarity(query: str, value: str) -> float:
         overlap = len(set(query_tokens) & set(value_tokens))
         token_ratio = overlap / max(len(set(query_tokens) | set(value_tokens)), 1)
         sequence_ratio = max(sequence_ratio, token_ratio)
+        query_token_set = set(query_tokens)
+        value_token_set = set(value_tokens)
+        if len(query_token_set) == 1 and query_token_set.issubset(value_token_set):
+            only_token = next(iter(query_token_set))
+            if len(only_token) >= 4:
+                sequence_ratio = max(sequence_ratio, 0.56)
     return sequence_ratio
 
 

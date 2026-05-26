@@ -39,6 +39,7 @@ class ResolvedSubject:
     subject_id: int | str | None
     canonical: str
     confidence: float
+    confidence_level: str | None = None
     reason: str | None = None
 
 
@@ -54,12 +55,15 @@ class SearchDiagnostics:
     original_query: str
     expanded_queries: list[str] = field(default_factory=list)
     expanded_query_details: list[ExpandedQueryDetail] = field(default_factory=list)
+    resolution_status: str = "unresolved"
+    needs_review: bool = False
     sources: list[str] = field(default_factory=list)
     active_filters: dict[str, Any] = field(default_factory=dict)
     candidate_count_before_filter: int | None = None
     candidate_count_after_filter: int | None = None
     suggestions: list[str] = field(default_factory=list)
     resolved_subject: ResolvedSubject | None = None
+    candidate_subjects: list[dict[str, Any]] = field(default_factory=list)
     rejected_subjects: list[dict[str, Any]] = field(default_factory=list)
 
 
