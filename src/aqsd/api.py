@@ -179,7 +179,6 @@ def build_health_payload(config: AppConfig) -> dict[str, Any]:
 
 
 def serialize_candidate(candidate: Candidate, rank: int) -> dict[str, Any]:
-    candidate_url = candidate.url or ""
     return {
         "rank": rank,
         "title": candidate.title,
@@ -188,8 +187,8 @@ def serialize_candidate(candidate: Candidate, rank: int) -> dict[str, Any]:
         "seeders": candidate.seeders,
         "size": None,
         "published_at": _serialize_datetime(candidate.published_at),
-        "magnet": candidate_url if candidate_url.casefold().startswith("magnet:") else None,
-        "url": candidate_url or None,
+        "magnet": candidate.magnet or None,
+        "url": candidate.url or None,
         "parsed": {
             "episode": candidate.episode,
             "season": candidate.season,

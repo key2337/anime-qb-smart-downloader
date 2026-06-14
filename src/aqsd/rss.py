@@ -111,14 +111,42 @@ def fetch_rss(source: Any, keyword: str | None = None) -> list[Candidate]:
         if not title or not url:
             continue
 
+        magnet = _extract_magnet(entry)
+        info_hash = _extract_info_hash_from_magnet(magnet)
+
         items.append(
             Candidate(
                 title=title,
                 url=url,
                 source=source_name,
+                magnet=magnet,
+                info_hash=info_hash,
                 published_at=parse_datetime(published),
                 seeders=extract_seeders(entry),
             )
         )
 
     return items
+
+
+def _extract_magnet(entry: dict[str, Any]) -> str | None:
+    for link in entry.get("links", []):
+        if link.get("type") == "application/x-bittorrent":
+            href = link.get("href", "")
+            if href.casefold().startswith("magnet:"):
+                return href
+    for link in entry.get("links", []):
+        href = link.get("href", "")
+        if href.casefold().startswith("magnet:"):
+            return href
+    return None
+
+
+def _extract_info_hash_from_magnet(magnet: str | None) -> str | None:
+    if not magnet:
+        return None
+    import re
+    match = re.search(r"btih:([A-Za-z0-9]+)", magnet)
+    if match:
+        return match.group(1)
+    return None

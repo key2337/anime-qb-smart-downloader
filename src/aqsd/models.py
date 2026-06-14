@@ -74,6 +74,7 @@ class Candidate:
     title: str
     url: str
     source: str
+    magnet: str | None = None
     info_hash: str | None = None
     published_at: datetime | None = None
     seeders: int = 0
