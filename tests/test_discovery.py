@@ -7,6 +7,7 @@ from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_rule_candidates, discover_search_candidates
 from aqsd.models import Candidate, ExpandedQueryDetail, SearchDiagnostics
 from aqsd.anilist import TitleMetadata
+from aqsd.title_resolver import TitleResolution
 
 
 class _FakeDatabase:
@@ -355,6 +356,83 @@ class DiscoveryTests(unittest.TestCase):
         self.assertTrue(result.candidates[0].is_batch)
 
     @patch("aqsd.discovery.fetch_rss")
+    def test_release_mode_any_without_strong_filters_keeps_multiple_candidates(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(title="[LoliHouse] My Dress-Up Darling - 01 [1080p][CHS]", url="https://example.test/a", source="mock"),
+            Candidate(title="[SubsPlease] My Dress-Up Darling - 02 [1080p][CHS]", url="https://example.test/b", source="mock"),
+            Candidate(title="[DameDesuYo] My Dress-Up Darling Batch [1080p][CHS]", url="https://example.test/c", source="mock"),
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="My Dress-Up Darling", release_mode="any", limit=20),
+        )
+
+        self.assertEqual(len(result.candidates), 3)
+        self.assertEqual(result.diagnostics.active_filters, {"release_mode": "any", "limit": 20})
+        self.assertEqual(result.diagnostics.stage_counts["count_after_release_mode_filter"], 3)
+        self.assertEqual(result.diagnostics.candidate_count_after_filter, 3)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_without_episode_filter_keeps_null_and_multiple_episode_candidates(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(title="[GroupA] Example Anime [1080p][CHS]", url="https://example.test/no-ep", source="mock"),
+            Candidate(title="[GroupB] Example Anime - 01 [1080p][CHS]", url="https://example.test/ep01", source="mock"),
+            Candidate(title="[GroupC] Example Anime - 12 [1080p][CHS]", url="https://example.test/ep12", source="mock"),
+        ]
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(len(result.candidates), 3)
+        self.assertEqual({candidate.episode for candidate in result.candidates}, {None, "01", "12"})
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_dedupe_does_not_merge_candidates_with_different_group_or_episode(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(title="[GroupA] Example Anime - 01 [1080p][CHS]", url="https://example.test/group-a", source="mock"),
+            Candidate(title="[GroupB] Example Anime - 01 [1080p][CHS]", url="https://example.test/group-b", source="mock"),
+            Candidate(title="[GroupA] Example Anime - 02 [1080p][CHS]", url="https://example.test/group-a-ep2", source="mock"),
+        ]
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(len(result.candidates), 3)
+        self.assertEqual(result.diagnostics.stage_counts["count_after_dedupe"], 3)
+        self.assertEqual(result.diagnostics.filter_drop_reasons.get("duplicate_candidate", 0), 0)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_limit_applies_after_sorting_not_filtering(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(title="[GroupA] Example Anime - 01 [1080p][CHS]", url="https://example.test/1", source="mock", seeders=1),
+            Candidate(title="[GroupB] Example Anime - 02 [1080p][CHS]", url="https://example.test/2", source="mock", seeders=5),
+            Candidate(title="[GroupC] Example Anime - 03 [1080p][CHS]", url="https://example.test/3", source="mock", seeders=10),
+        ]
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="Example Anime", limit=2))
+
+        self.assertEqual(len(result.candidates), 2)
+        self.assertEqual(result.diagnostics.candidate_count_after_filter, 3)
+        self.assertEqual(result.diagnostics.stage_counts["count_after_dedupe"], 3)
+        self.assertEqual(result.diagnostics.stage_counts["count_after_limit"], 2)
+
+    @patch("aqsd.discovery.resolve_search_title")
+    @patch("aqsd.discovery.fetch_rss")
+    def test_diagnostics_resolution_status_is_normalized_when_subject_missing(self, mock_fetch_rss, mock_resolve_search_title) -> None:
+        mock_fetch_rss.return_value = []
+        mock_resolve_search_title.return_value = TitleResolution(
+            canonical="Example Anime",
+            expanded_queries=["Example Anime"],
+            expanded_query_details=[ExpandedQueryDetail(text="Example Anime", source="original")],
+            resolution_status="resolved_medium_confidence",
+            resolved_subject=None,
+        )
+
+        result = discover_search_candidates(_build_config(), SearchRequest(query="Example Anime"))
+
+        self.assertEqual(result.diagnostics.resolution_status, "unresolved")
+        self.assertIsNone(result.diagnostics.resolved_subject)
+
+    @patch("aqsd.discovery.fetch_rss")
     def test_discover_search_candidates_filters_and_scores_results(self, mock_fetch_rss) -> None:
         mock_fetch_rss.return_value = [
             Candidate(
@@ -460,6 +538,25 @@ class DiscoveryTests(unittest.TestCase):
         )
 
         self.assertEqual([candidate.group for candidate in result.candidates], ["LoliHouse"])
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_discover_search_candidates_without_requested_groups_does_not_auto_prefer_candidate_group(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[DemiHuman] Example Anime - 01 [1080p][CHS]",
+                url="https://example.test/group-auto-prefer",
+                source="mock",
+            ),
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime"),
+        )
+
+        self.assertEqual(len(result.candidates), 1)
+        reasons = result.candidates[0].breakdown.reasons
+        self.assertFalse(any(reason.code == "preferred_group" for reason in reasons))
 
     @patch("aqsd.discovery.fetch_rss")
     def test_discover_search_candidates_filters_by_subtitle_type(self, mock_fetch_rss) -> None:

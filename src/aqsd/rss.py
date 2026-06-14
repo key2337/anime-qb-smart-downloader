@@ -48,7 +48,7 @@ def _download_feed(url: str) -> requests.Response:
     response = requests.get(
         url,
         headers={"User-Agent": USER_AGENT},
-        timeout=10,
+        timeout=30,
     )
     response.raise_for_status()
     return response
@@ -76,9 +76,23 @@ def inspect_rss(source: Any) -> dict[str, Any]:
     }
 
 
-def fetch_rss(source: Any) -> list[Candidate]:
+def build_keyword_rss_url(base_url: str, keyword: str) -> str:
+    """Build a keyword-filtered RSS URL for dmhy-style sources."""
+    from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+
+    parsed = urlparse(base_url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query["keyword"] = [keyword]
+    new_query = urlencode(query, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def fetch_rss(source: Any, keyword: str | None = None) -> list[Candidate]:
     source_name = source.name if hasattr(source, "name") else source["name"]
     source_url = source.url if hasattr(source, "url") else source["url"]
+
+    if keyword:
+        source_url = build_keyword_rss_url(source_url, keyword)
 
     response = _download_feed(source_url)
     feed = feedparser.parse(response.content)

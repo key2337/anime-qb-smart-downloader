@@ -47,6 +47,8 @@ class ScorerTests(unittest.TestCase):
         generic_score = score_candidate(generic, self.rule, profile, now=self.now)
 
         self.assertGreater(preferred_score, generic_score)
+        self.assertTrue(any(reason.code == "preferred_group" for reason in preferred.breakdown.reasons))
+        self.assertFalse(any(reason.code == "preferred_group" for reason in generic.breakdown.reasons))
 
     def test_batch_penalty_outweighs_small_seed_bonus(self) -> None:
         profile = {"prefer": ["RAW", "WEB-DL"]}
@@ -185,6 +187,35 @@ class ScorerTests(unittest.TestCase):
         self.assertGreater(strong_score, weak_score)
         self.assertTrue(any("resolved subject" in reason.message for reason in strong_candidate.breakdown.reasons))
         self.assertTrue(any("weak title match" in reason.message for reason in weak_candidate.breakdown.reasons))
+
+    def test_group_not_in_preferred_groups_gets_no_preferred_group_bonus(self) -> None:
+        candidate = Candidate(
+            title="generic",
+            url="https://example.test/group-miss",
+            source="mikan",
+            group="OtherGroup",
+            seeders=5,
+        )
+
+        score_candidate(candidate, self.rule, {}, now=self.now)
+
+        self.assertFalse(any(reason.code == "preferred_group" for reason in candidate.breakdown.reasons))
+        self.assertTrue(any(reason.code == "group_penalty" for reason in candidate.breakdown.reasons))
+
+    def test_no_preferred_groups_configured_does_not_add_group_score(self) -> None:
+        rule = AnimeRule(name="Example Anime", prefer_groups=[])
+        candidate = Candidate(
+            title="generic",
+            url="https://example.test/no-preferred-groups",
+            source="mikan",
+            group="LoliHouse",
+            seeders=5,
+        )
+
+        score_candidate(candidate, rule, {}, now=self.now)
+
+        self.assertFalse(any(reason.code == "preferred_group" for reason in candidate.breakdown.reasons))
+        self.assertFalse(any(reason.code == "group_penalty" for reason in candidate.breakdown.reasons))
 
 
 if __name__ == "__main__":

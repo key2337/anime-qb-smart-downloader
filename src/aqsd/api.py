@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,7 @@ class SearchPayload(BaseModel):
     group: str | None = None
     raw_only: bool = False
     exclude_batch: bool = False
+    batch_only: bool = False
     release_mode: str = Field(default="any", pattern="^(any|episode|batch)$")
     limit: int = 20
 
@@ -87,6 +89,7 @@ def create_api_app(config: AppConfig):
             raise http_exception(status_code=400, detail="query must not be empty")
 
         limit = max(1, min(int(payload.limit or 20), MAX_API_SEARCH_LIMIT))
+        release_mode = "batch" if payload.batch_only else payload.release_mode
         request = SearchRequest(
             query=query,
             episodes=[payload.episode] if payload.episode else [],
@@ -95,7 +98,7 @@ def create_api_app(config: AppConfig):
             subtitle_type=None if payload.subtitle in (None, "", "any") else payload.subtitle,
             raw_only=payload.raw_only,
             exclude_batch=payload.exclude_batch,
-            release_mode=payload.release_mode,
+            release_mode=release_mode,
             limit=limit,
         )
         result = discover_search_candidates(config, request)
@@ -206,6 +209,8 @@ def serialize_diagnostics(diagnostics: SearchDiagnostics | None) -> dict[str, An
             "active_filters": {},
             "candidate_count_before_filter": None,
             "candidate_count_after_filter": None,
+            "stage_counts": {},
+            "filter_drop_reasons": {},
             "suggestions": [],
             "resolved_subject": None,
             "candidate_subjects": [],
@@ -221,6 +226,8 @@ def serialize_diagnostics(diagnostics: SearchDiagnostics | None) -> dict[str, An
         "active_filters": dict(diagnostics.active_filters),
         "candidate_count_before_filter": diagnostics.candidate_count_before_filter,
         "candidate_count_after_filter": diagnostics.candidate_count_after_filter,
+        "stage_counts": dict(diagnostics.stage_counts),
+        "filter_drop_reasons": dict(diagnostics.filter_drop_reasons),
         "suggestions": list(diagnostics.suggestions),
         "resolved_subject": serialize_resolved_subject(diagnostics.resolved_subject),
         "candidate_subjects": list(diagnostics.candidate_subjects),
@@ -245,24 +252,30 @@ def serialize_title_evidence(evidence: TitleEvidence | None) -> dict[str, Any] |
 
 
 def _probe_qb_status(config: AppConfig) -> dict[str, Any]:
-    client = QBittorrentClient(
-        base_url=config.qb.base_url,
-        username=config.qb.username,
-        password=config.qb.password,
-    )
-    try:
-        client.login()
-        client.get_version()
-    except Exception as exc:
-        return {
-            "configured": True,
-            "reachable": False,
-            "error": str(exc),
-        }
-    return {
-        "configured": True,
-        "reachable": True,
-    }
+    def _probe() -> dict[str, Any]:
+        client = QBittorrentClient(
+            base_url=config.qb.base_url,
+            username=config.qb.username,
+            password=config.qb.password,
+        )
+        try:
+            client.login()
+        except Exception as exc:
+            return {"configured": True, "reachable": False, "error": f"login: {exc}"}
+        try:
+            client.get_version()
+        except Exception as exc:
+            return {"configured": True, "reachable": False, "error": f"version: {exc}"}
+        return {"configured": True, "reachable": True}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_probe)
+        try:
+            return future.result(timeout=5)
+        except FutureTimeoutError:
+            return {"configured": True, "reachable": False, "error": "health check timed out"}
+        except Exception as exc:
+            return {"configured": True, "reachable": False, "error": str(exc)}
 
 
 def _serialize_datetime(value: datetime | None) -> str | None:
@@ -313,4 +326,4 @@ def _web_file_response(filename: str, *, media_type: str, file_response: Any, ht
     path = WEB_DIR / filename
     if not path.exists():
         raise http_exception(status_code=500, detail=f"missing web asset: {filename}")
-    return file_response(path, media_type=media_type)
+    return file_response(path, media_type=media_type, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})

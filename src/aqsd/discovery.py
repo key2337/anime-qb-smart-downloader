@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 from loguru import logger
 
@@ -44,6 +45,22 @@ class SearchRequest:
     release_mode: str = "any"
     min_seeders: int = 0
     limit: int | None = None
+
+
+_DEFAULT_STAGE_COUNTS = {
+    "count_after_fetch": 0,
+    "count_after_title_match": 0,
+    "count_after_exclude_batch_filter": 0,
+    "count_after_release_mode_filter": 0,
+    "count_after_episode_filter": 0,
+    "count_after_resolution_filter": 0,
+    "count_after_group_filter": 0,
+    "count_after_subtitle_filter": 0,
+    "count_after_raw_only_filter": 0,
+    "count_after_min_seeders_filter": 0,
+    "count_after_dedupe": 0,
+    "count_after_limit": 0,
+}
 
 
 def group_candidates_by_episode(candidates: list[Candidate]) -> dict[tuple[str, str], list[Candidate]]:
@@ -115,19 +132,24 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     result = DiscoveryResult()
     seen_urls: set[str] = set()
     seen_hashes: set[str] = set()
-    seen_title_episodes: set[tuple[str, str]] = set()
+    seen_candidate_keys: set[tuple[object, ...]] = set()
     attempted_sources: list[str] = []
     title_resolution = resolve_search_title(config, request.query)
+    resolution_status, resolved_subject = _normalize_resolution_status(
+        title_resolution.resolution_status,
+        title_resolution.resolved_subject,
+    )
     _hydrate_request_queries(request, title_resolution)
     logger.info("Search queries expanded: {}", ", ".join(request.expanded_queries or [request.query]))
     result.diagnostics = SearchDiagnostics(
         original_query=request.query,
         expanded_queries=list(request.expanded_queries or [request.query]),
         expanded_query_details=list(request.expanded_query_details),
-        resolution_status=title_resolution.resolution_status,
-        needs_review=title_resolution.needs_review,
+        resolution_status=resolution_status,
+        needs_review=title_resolution.needs_review if resolution_status == title_resolution.resolution_status else False,
         active_filters=_build_active_filters(request),
-        resolved_subject=title_resolution.resolved_subject,
+        resolved_subject=resolved_subject,
+        stage_counts=dict(_DEFAULT_STAGE_COUNTS),
         candidate_subjects=list(title_resolution.candidate_subjects),
         rejected_subjects=list(title_resolution.rejected_subjects),
     )
@@ -138,18 +160,35 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
 
         if "RSS" not in attempted_sources:
             attempted_sources.append("RSS")
-        logger.info("Fetching RSS: {}", source.name)
-        items = fetch_rss(source)
-        result.rss_entries_total += len(items)
-        _collect_search_matches(
-            items,
-            request,
-            config,
-            result,
-            seen_urls,
-            seen_hashes,
-            seen_title_episodes,
-        )
+
+        rss_keywords = _rss_keywords(source, request)
+        if rss_keywords:
+            for keyword in rss_keywords:
+                logger.info("Fetching RSS: {} keyword={}", source.name, keyword)
+                items = fetch_rss(source, keyword=keyword)
+                result.rss_entries_total += len(items)
+                _collect_search_matches(
+                    items,
+                    request,
+                    config,
+                    result,
+                    seen_urls,
+                    seen_hashes,
+                    seen_candidate_keys,
+                )
+        else:
+            logger.info("Fetching RSS: {}", source.name)
+            items = fetch_rss(source)
+            result.rss_entries_total += len(items)
+            _collect_search_matches(
+                items,
+                request,
+                config,
+                result,
+                seen_urls,
+                seen_hashes,
+                seen_candidate_keys,
+            )
 
     nyaa_settings = config.search_sources.nyaa
     if nyaa_settings.enabled:
@@ -170,7 +209,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
                 result,
                 seen_urls,
                 seen_hashes,
-                seen_title_episodes,
+                seen_candidate_keys,
             )
 
     torznab_settings = config.search_sources.torznab
@@ -198,7 +237,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
                     result,
                     seen_urls,
                     seen_hashes,
-                    seen_title_episodes,
+                    seen_candidate_keys,
                 )
 
     result.candidates = sorted(
@@ -212,6 +251,7 @@ def discover_search_candidates(config: AppConfig, request: SearchRequest) -> Dis
     if result.diagnostics is not None:
         result.diagnostics.sources = attempted_sources
         result.diagnostics.candidate_count_after_filter = candidate_count_after_filter
+        result.diagnostics.stage_counts["count_after_limit"] = len(result.candidates)
         result.diagnostics.suggestions = _build_search_suggestions(result.diagnostics, config)
 
     return result
@@ -237,6 +277,21 @@ def resolve_search_title(config: AppConfig, query: str) -> TitleResolution:
             cache.close()
 
 
+def _rss_keywords(source: Any, request: SearchRequest) -> list[str] | None:
+    source_url = source.url if hasattr(source, "url") else source.get("url", "")
+    if "dmhy.org" not in source_url:
+        return None
+    from urllib.parse import parse_qs, urlparse
+
+    existing_params = parse_qs(urlparse(source_url).query)
+    if "keyword" in existing_params:
+        return None
+    queries = [detail.text for detail in (request.expanded_query_details or []) if detail.search_eligible]
+    if not queries:
+        queries = list(request.expanded_queries or [request.query])
+    return queries[:1]
+
+
 def _hydrate_request_queries(request: SearchRequest, resolution: TitleResolution) -> None:
     if not request.expanded_query_details:
         request.expanded_query_details.extend(resolution.expanded_query_details)
@@ -258,45 +313,63 @@ def _collect_search_matches(
     result: DiscoveryResult,
     seen_urls: set[str],
     seen_hashes: set[str],
-    seen_title_episodes: set[tuple[str, str]],
+    seen_candidate_keys: set[tuple[object, ...]],
 ) -> None:
     for item in items:
-        if not item.url or item.url in seen_urls:
+        if not item.url:
             continue
 
         candidate = parse_candidate(item)
-        hash_key = _hash_key(candidate)
-        if hash_key and hash_key in seen_hashes:
+        _increment_stage(result.diagnostics, "count_after_fetch")
+
+        if candidate.episode is not None:
+            result.parsed_success_total += 1
+
+        matched_detail = _match_query_detail(candidate, request)
+        if request.query and matched_detail is None:
+            _increment_drop_reason(result.diagnostics, "title_match")
+            continue
+        if matched_detail is not None:
+            _attach_match_evidence(candidate, matched_detail)
+        _increment_stage(result.diagnostics, "count_after_title_match")
+
+        drop_reason = _filter_candidate(candidate, request, result.diagnostics)
+        if drop_reason is not None:
+            _increment_drop_reason(result.diagnostics, drop_reason)
             continue
 
-        duplicate_key = _title_episode_key(candidate)
-        if duplicate_key and duplicate_key in seen_title_episodes:
+        if candidate.url in seen_urls:
+            _increment_drop_reason(result.diagnostics, "duplicate_url")
+            continue
+        hash_key = _hash_key(candidate)
+        if hash_key and hash_key in seen_hashes:
+            _increment_drop_reason(result.diagnostics, "duplicate_info_hash")
+            continue
+        duplicate_key = _candidate_dedupe_key(candidate)
+        if duplicate_key in seen_candidate_keys:
+            _increment_drop_reason(result.diagnostics, "duplicate_candidate")
             continue
 
         seen_urls.add(candidate.url)
         if hash_key:
             seen_hashes.add(hash_key)
-        if duplicate_key:
-            seen_title_episodes.add(duplicate_key)
-        if result.diagnostics and result.diagnostics.candidate_count_before_filter is not None:
-            result.diagnostics.candidate_count_before_filter += 1
-        elif result.diagnostics:
-            result.diagnostics.candidate_count_before_filter = 1
-
-        if candidate.episode is not None:
-            result.parsed_success_total += 1
-
-        if not _matches_search_request(candidate, request):
-            continue
+        seen_candidate_keys.add(duplicate_key)
+        _increment_stage(result.diagnostics, "count_after_dedupe")
 
         _score_search_candidate(candidate, request, config)
         result.candidates.append(candidate)
 
 
-def _title_episode_key(candidate: Candidate) -> tuple[str, str] | None:
-    if not candidate.episode:
-        return None
-    return normalize_text(candidate.title), candidate.episode
+def _candidate_dedupe_key(candidate: Candidate) -> tuple[object, ...]:
+    return (
+        normalize_text(candidate.title),
+        normalize_text(candidate.parsed_title or ""),
+        candidate.season or 0,
+        candidate.episode or "",
+        normalize_text(candidate.group or ""),
+        (candidate.resolution or "").casefold(),
+        bool(candidate.is_batch),
+    )
 
 
 def _hash_key(candidate: Candidate) -> str | None:
@@ -305,41 +378,72 @@ def _hash_key(candidate: Candidate) -> str | None:
     return candidate.info_hash.strip().casefold() or None
 
 
-def _matches_search_request(candidate: Candidate, request: SearchRequest) -> bool:
-    matched_detail = _match_query_detail(candidate, request)
-    if request.query and matched_detail is None:
-        return False
-    if matched_detail is not None:
-        _attach_match_evidence(candidate, matched_detail)
+def _increment_stage(diagnostics: SearchDiagnostics | None, key: str) -> None:
+    if diagnostics is None:
+        return
+    diagnostics.stage_counts[key] = diagnostics.stage_counts.get(key, 0) + 1
+    if key == "count_after_title_match":
+        diagnostics.candidate_count_before_filter = diagnostics.stage_counts[key]
 
+
+def _increment_drop_reason(diagnostics: SearchDiagnostics | None, key: str) -> None:
+    if diagnostics is None:
+        return
+    diagnostics.filter_drop_reasons[key] = diagnostics.filter_drop_reasons.get(key, 0) + 1
+
+
+def _normalize_resolution_status(
+    resolution_status: str,
+    resolved_subject,
+):
+    if resolution_status.startswith("resolved_") and resolved_subject is None:
+        return "unresolved", None
+    if resolution_status in {"ambiguous", "unresolved"}:
+        return resolution_status, None
+    return resolution_status, resolved_subject
+
+
+def _filter_candidate(
+    candidate: Candidate,
+    request: SearchRequest,
+    diagnostics: SearchDiagnostics | None,
+) -> str | None:
     if request.exclude_batch and candidate.is_batch:
-        return False
+        return "exclude_batch"
+    _increment_stage(diagnostics, "count_after_exclude_batch_filter")
 
     if request.release_mode == "episode" and candidate.is_batch:
-        return False
+        return "release_mode"
 
     if request.release_mode == "batch" and not candidate.is_batch:
-        return False
+        return "release_mode"
+    _increment_stage(diagnostics, "count_after_release_mode_filter")
 
     if request.episodes and not _episode_matches_request(candidate, request):
-        return False
+        return "episode"
+    _increment_stage(diagnostics, "count_after_episode_filter")
 
     if request.resolution and (candidate.resolution or "").casefold() != request.resolution.casefold():
-        return False
+        return "resolution"
+    _increment_stage(diagnostics, "count_after_resolution_filter")
 
     if request.groups and not _value_in_normalized_set(candidate.group, request.groups):
-        return False
+        return "group"
+    _increment_stage(diagnostics, "count_after_group_filter")
 
     if request.subtitle_type and (candidate.subtitle_type or "").casefold() != request.subtitle_type.casefold():
-        return False
+        return "subtitle"
+    _increment_stage(diagnostics, "count_after_subtitle_filter")
 
     if request.raw_only and not candidate.is_raw:
-        return False
+        return "raw_only"
+    _increment_stage(diagnostics, "count_after_raw_only_filter")
 
     if candidate.seeders < request.min_seeders:
-        return False
+        return "min_seeders"
+    _increment_stage(diagnostics, "count_after_min_seeders_filter")
 
-    return True
+    return None
 
 
 def _match_query_detail(candidate: Candidate, request: SearchRequest) -> ExpandedQueryDetail | None:
@@ -424,10 +528,9 @@ def _episode_matches_request(candidate: Candidate, request: SearchRequest) -> bo
 
 
 def _score_search_candidate(candidate: Candidate, request: SearchRequest, config: AppConfig) -> None:
-    prefer_groups = request.groups or ([candidate.group] if candidate.group else [])
     rule = AnimeRule(
         name=request.query,
-        prefer_groups=prefer_groups,
+        prefer_groups=list(request.groups or []),
         save_path=config.qb.default_save_path,
         category=config.qb.default_category,
     )

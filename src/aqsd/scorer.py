@@ -68,6 +68,9 @@ def _score_freshness(candidate: Candidate, current_time: datetime) -> tuple[floa
 
 
 def _score_group_preference(candidate: Candidate, rule: AnimeRule) -> float:
+    if not rule.prefer_groups:
+        return 0.0
+
     if not candidate.group:
         return UNKNOWN_GROUP_PENALTY
 
@@ -251,9 +254,9 @@ def explain_score_candidate(
         _add_reason(breakdown, "freshness", freshness_score, f"release freshness: age {age_hours:.1f}h")
 
     group_score = _score_group_preference(candidate, rule)
-    if group_score >= 0:
+    if group_score > 0:
         _add_reason(breakdown, "preferred_group", group_score, f"preferred group: {candidate.group}")
-    else:
+    elif group_score < 0:
         _add_reason(breakdown, "group_penalty", group_score, f"group penalty: {candidate.group or 'unknown'}")
 
     if latest_episode_key is not None and _candidate_episode_key(candidate) == latest_episode_key:

@@ -61,6 +61,8 @@ class SearchDiagnostics:
     active_filters: dict[str, Any] = field(default_factory=dict)
     candidate_count_before_filter: int | None = None
     candidate_count_after_filter: int | None = None
+    stage_counts: dict[str, int] = field(default_factory=dict)
+    filter_drop_reasons: dict[str, int] = field(default_factory=dict)
     suggestions: list[str] = field(default_factory=list)
     resolved_subject: ResolvedSubject | None = None
     candidate_subjects: list[dict[str, Any]] = field(default_factory=list)

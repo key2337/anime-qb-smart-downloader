@@ -19,6 +19,7 @@ const elements = {
   group: document.getElementById("group"),
   rawOnly: document.getElementById("raw-only"),
   excludeBatch: document.getElementById("exclude-batch"),
+  batchOnly: document.getElementById("batch-only"),
   releaseMode: document.getElementById("release-mode"),
   limit: document.getElementById("limit"),
 };
@@ -79,7 +80,7 @@ async function handleResolveTitle() {
       active_filters: {},
       candidate_count_before_filter: null,
       candidate_count_after_filter: null,
-      suggestions: ["可先确认这里的标题扩展是否符合预期。"],
+      suggestions: ["可先确认这里的标题扩展\u662f\u5426符合预期。"],
       resolved_subject: payload.resolved_subject || null,
       candidate_subjects: payload.candidate_subjects || [],
       rejected_subjects: payload.rejected_subjects || [],
@@ -130,7 +131,8 @@ function buildSearchPayload() {
     group: normalizeOptionalText(elements.group.value),
     raw_only: elements.rawOnly.checked,
     exclude_batch: elements.excludeBatch.checked,
-    release_mode: normalizeOptionalText(elements.releaseMode.value) || "any",
+    batch_only: elements.batchOnly.checked,
+    release_mode: elements.batchOnly.checked ? "batch" : (normalizeOptionalText(elements.releaseMode.value) || "any"),
     limit: normalizeLimit(elements.limit.value),
   };
 }
@@ -311,11 +313,12 @@ function renderDiagnostics(diagnostics, candidates = []) {
 function renderResolutionStatus(diagnostics) {
   const status = diagnostics && diagnostics.resolution_status ? diagnostics.resolution_status : "unresolved";
   const needsReview = Boolean(diagnostics && diagnostics.needs_review);
+  const needsReviewLabel = needsReview ? "\u662f" : "\u5426";
   return `
     <div class="section-label">解析状态</div>
     <div class="parsed-grid">
       <div>resolution_status: ${escapeHtml(formatValue(status))}</div>
-      <div>needs_review: ${needsReview ? "鏄? : "鍚?}</div>
+      <div>needs_review: ${needsReviewLabel}</div>
     </div>
   `;
 }
@@ -424,17 +427,28 @@ function toggleCandidateDetails(button) {
   button.textContent = expanded ? "收起详情" : "展开详情";
 }
 
-async function apiRequest(url, options) {
-  const response = await fetch(url, options);
-  const isJson = (response.headers.get("content-type") || "").includes("application/json");
-  const payload = isJson ? await response.json() : await response.text();
-  if (!response.ok) {
-    if (isJson && payload && typeof payload.detail === "string") {
-      throw new Error(payload.detail);
+async function apiRequest(url, options, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const isJson = (response.headers.get("content-type") || "").includes("application/json");
+    const payload = isJson ? await response.json() : await response.text();
+    if (!response.ok) {
+      if (isJson && payload && typeof payload.detail === "string") {
+        throw new Error(payload.detail);
+      }
+      throw new Error(typeof payload === "string" ? payload : `HTTP ${response.status}`);
     }
-    throw new Error(typeof payload === "string" ? payload : `HTTP ${response.status}`);
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试。");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return payload;
 }
 
 function setLoading(enabled, text = "正在加载...") {
@@ -480,10 +494,10 @@ function metadataStatusLabel(value) {
 
 function boolOrUnknown(value) {
   if (value === true) {
-    return "是";
+    return "\u662f";
   }
   if (value === false) {
-    return "否";
+    return "\u5426";
   }
   return "未知";
 }
@@ -545,7 +559,7 @@ function formatFilterValue(key, value) {
     }[value] || String(value);
   }
   if (typeof value === "boolean") {
-    return value ? "是" : "否";
+    return value ? "\u662f" : "\u5426";
   }
   return formatValue(value);
 }

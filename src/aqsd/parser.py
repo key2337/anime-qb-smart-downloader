@@ -18,17 +18,20 @@ SEASON_PATTERNS = [
     re.compile(r"\b[Ss](?P<season>\d{1,2})\b"),
     re.compile(r"\bSeason\s*(?P<season>\d{1,2})\b", re.IGNORECASE),
     re.compile(r"\b(?P<season>\d{1,2})(?:st|nd|rd|th)\s+Season\b", re.IGNORECASE),
+    re.compile(r"第\s*(?P<season>\d{1,2})\s*季"),
+    re.compile(r"第\s*(?P<season>\d{1,2})\s*期"),
 ]
-FALLBACK_EPISODE_RE = re.compile(r"(?:^|[\s\-_])(?P<episode>\d{1,3})(?:[Vv](?P<revision>\d))?(?=$|[\s\-_])")
+FALLBACK_EPISODE_RE = re.compile(r"(?:^|[\s\-_])(?P<episode>\d{1,4})(?:[Vv](?P<revision>\d))?(?=$|[\s\-_])")
 SOURCE_PATTERNS = {
     "WEB-DL": re.compile(r"\bWEB[- ]?DL\b", re.IGNORECASE),
     "BLURAY": re.compile(r"\bBluRay\b", re.IGNORECASE),
-    "WEBRip": re.compile(r"\bWEBRip\b", re.IGNORECASE),
+    "WEBRip": re.compile(r"\bWEB[- ]?Rip\b", re.IGNORECASE),
 }
 HEVC_RE = re.compile(r"\b(?:hevc|x265|h[\s.]?265)\b", re.IGNORECASE)
+BATCH_MARKER_RE = re.compile(r"\b(?:batch|complete|end)\b", re.IGNORECASE)
 DUAL_AUDIO_RE = re.compile(r"\bdual(?:[ -]?audio)?\b", re.IGNORECASE)
-EXTERNAL_SUB_MARKERS = ("外挂", "外挂字幕", "external")
-EMBEDDED_SUB_MARKERS = ("chs", "cht", "简中", "繁中", "内嵌", "中字", "简繁")
+EXTERNAL_SUB_MARKERS = ("外挂", "外掛", "外挂字幕", "外掛字幕", "external")
+EMBEDDED_SUB_MARKERS = ("chs", "cht", "简中", "簡中", "繁中", "内嵌", "內嵌", "中字", "简繁", "簡繁", "内封", "內封")
 RAW_MARKERS = ("raw",)
 
 
@@ -43,6 +46,54 @@ def _clean_title_for_episode_search(title: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _extract_episode_from_bracket(title: str) -> tuple[str | None, bool]:
+    """Extract episode from dedicated bracket like [1165] or [13] (dmhy format)."""
+    bracket_contents = re.findall(r"\[([^\]]*)\]", title)
+    best_match: str | None = None
+    is_range = False
+
+    for content in bracket_contents:
+        stripped = content.strip()
+        range_match = re.match(r"^(\d{2,4})\s*[-~]\s*(\d{2,4})$", stripped)
+        if range_match:
+            is_range = True
+            first = range_match.group(1)
+            best_match = first.zfill(2)
+            continue
+
+        num_match = re.match(r"^(\d+)$", stripped)
+        if not num_match:
+            continue
+
+        num = int(num_match.group(1))
+        if 1900 <= num <= 2030 or num in (480, 720, 1080, 2160, 240, 360):
+            continue
+
+        candidate_val = str(num).zfill(2)
+
+        if best_match is None or int(candidate_val) > int(best_match):
+            best_match = candidate_val
+
+    if best_match is None:
+        return None, False
+
+    has_season_bracket = any(
+        re.match(r"^[Ss]\d{1,2}$", content.strip()) and content.strip() != f"S{best_match.lstrip('0')}"
+        for content in bracket_contents
+    )
+    if has_season_bracket:
+        return None, False
+
+    return best_match, is_range
+
+
+def _bracket_has_range(title: str) -> bool:
+    for content in re.findall(r"\[([^\]]*)\]", title):
+        if re.match(r"^\d{2,4}\s*[-~]\s*\d{2,4}$", content.strip()):
+            return True
+    return False
+
+
 def _extract_episode(title: str) -> tuple[str | None, bool]:
     for pattern in EXPLICIT_EPISODE_PATTERNS:
         match = pattern.search(title)
@@ -50,13 +101,18 @@ def _extract_episode(title: str) -> tuple[str | None, bool]:
             episode = match.group("episode").zfill(2)
             return episode, bool(match.groupdict().get("revision"))
 
-    cleaned = _clean_title_for_episode_search(title)
-    match = FALLBACK_EPISODE_RE.search(cleaned)
-    if not match:
-        return None, False
+    bracket_episode, _ = _extract_episode_from_bracket(title)
+    if bracket_episode is not None:
+        return bracket_episode, False
 
-    episode = match.group("episode").zfill(2)
-    return episode, bool(match.groupdict().get("revision"))
+    cleaned = _clean_title_for_episode_search(title)
+    for match in FALLBACK_EPISODE_RE.finditer(cleaned):
+        episode = match.group("episode")
+        num = int(episode)
+        if 1900 <= num <= 2030:
+            continue
+        return episode.zfill(2), bool(match.groupdict().get("revision"))
+    return None, False
 
 
 def _extract_season(title: str) -> int | None:
@@ -88,10 +144,11 @@ def _extract_release_group(title: str) -> str | None:
 
 def _extract_subtitle_type(title: str, candidate: Candidate) -> str:
     lowered = title.casefold()
+    bracket_text = " ".join(re.findall(r"\[([^\]]*)\]", title)).casefold()
 
-    if any(marker in lowered for marker in EXTERNAL_SUB_MARKERS):
+    if any(marker in lowered or marker in bracket_text for marker in EXTERNAL_SUB_MARKERS):
         return "external"
-    if any(marker in lowered for marker in EMBEDDED_SUB_MARKERS):
+    if any(marker in lowered or marker in bracket_text for marker in EMBEDDED_SUB_MARKERS):
         return "embedded"
     if candidate.is_raw:
         return "none"
@@ -127,11 +184,13 @@ def parse_candidate(candidate: Candidate) -> Candidate:
     if candidate.source_type == "WEB-DL":
         candidate.is_raw = True
 
-    candidate.is_batch = any(marker in lower_title for marker in ("batch", "合集", "complete"))
+    candidate.is_batch = (
+        bool(BATCH_MARKER_RE.search(title)) or "合集" in title or _bracket_has_range(title)
+    )
     candidate.is_hevc = bool(HEVC_RE.search(title))
     candidate.has_dual_audio = bool(DUAL_AUDIO_RE.search(title))
-    candidate.episode, revision_from_episode = _extract_episode(title)
-    candidate.is_v2 = revision_from_episode or bool(re.search(r"\bv[23]\b", lower_title))
+    candidate.episode, range_or_revision = _extract_episode(title)
+    candidate.is_v2 = range_or_revision or bool(re.search(r"\bv[23]\b", lower_title))
     candidate.subtitle_type = _extract_subtitle_type(title, candidate)
     candidate.parsed_title = _infer_parsed_title(title)
 
