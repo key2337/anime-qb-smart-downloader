@@ -223,7 +223,7 @@ def _language_from_evidence(candidate: Candidate) -> str:
 
 
 def _role_from_source(source: str, confidence: float) -> str:
-    if source in {"bangumi", "anilist", "local"} and confidence >= 0.85:
+    if source == "local" and confidence >= 0.85:
         return "primary"
     return "secondary"
 

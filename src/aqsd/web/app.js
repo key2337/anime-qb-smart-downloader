@@ -52,44 +52,17 @@ async function loadHealth() {
   }
 }
 
-async function handleResolveTitle() {
+function handleResolveTitle() {
   clearFormError();
   const query = elements.query.value.trim();
   if (!query) {
-    showFormError("请先输入动漫标题，再解析标题。");
+    showFormError('请先输入动漫标题。');
     return;
   }
 
-  setLoading(true, "正在解析标题...");
-  try {
-    const payload = await apiRequest("/api/resolve-title", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-    });
-    state.lastExpandedQueries = payload.expanded_queries || [];
-    state.lastExpandedQueryDetails = payload.expanded_query_details || [];
-    renderExpandedQueries(state.lastExpandedQueries, state.lastExpandedQueryDetails);
-    renderDiagnostics({
-      original_query: query,
-      expanded_queries: payload.expanded_queries || [],
-      expanded_query_details: payload.expanded_query_details || [],
-      resolution_status: payload.resolution_status || "unresolved",
-      needs_review: Boolean(payload.needs_review),
-      sources: payload.sources || [],
-      active_filters: {},
-      candidate_count_before_filter: null,
-      candidate_count_after_filter: null,
-      suggestions: ["可先确认这里的标题扩展\u662f\u5426符合预期。"],
-      resolved_subject: payload.resolved_subject || null,
-      candidate_subjects: payload.candidate_subjects || [],
-      rejected_subjects: payload.rejected_subjects || [],
-    });
-  } catch (error) {
-    showFormError(`解析标题失败：${error.message}`);
-  } finally {
-    setLoading(false);
-  }
+  state.lastExpandedQueries = [query];
+  state.lastExpandedQueryDetails = [];
+  renderExpandedQueries([query], []);
 }
 
 async function handleSearch() {
@@ -140,9 +113,6 @@ function buildSearchPayload() {
 function renderHealth(payload) {
   const qb = payload.qbittorrent || {};
   const sources = payload.sources || {};
-  const metadataSources = payload.metadata_sources || {};
-  const anilist = payload.anilist || metadataSources.anilist || {};
-  const bangumi = payload.bangumi || metadataSources.bangumi || {};
   const qbLabel = qb.reachable ? "可连接" : "不可连接";
   const qbError = qb.error ? `（${escapeHtml(qb.error)}）` : "";
 
@@ -150,10 +120,6 @@ function renderHealth(payload) {
     <div><strong>qBittorrent：</strong>${qbLabel}${qbError}</div>
     <ul class="status-list">
       <li>RSS：${boolLabel(sources.rss)}</li>
-      <li>Nyaa：${boolLabel(sources.nyaa)}</li>
-      <li>Torznab：${boolLabel(sources.torznab)}</li>
-      <li>Bangumi：${metadataStatusLabel(bangumi)}</li>
-      <li>AniList：${metadataStatusLabel(anilist)}</li>
     </ul>
   `;
 }

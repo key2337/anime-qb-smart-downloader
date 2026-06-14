@@ -6,7 +6,7 @@ import time
 
 from loguru import logger
 
-from aqsd.cli import run_download_command, run_resolve_title_command, run_search_command
+from aqsd.cli import run_download_command, run_search_command
 from aqsd.config import load_config
 from aqsd.database import Database
 from aqsd.dryrun import run_dry_run
@@ -27,8 +27,6 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser = subparsers.add_parser("search", help="Search RSS candidates without downloading.")
     search_parser.add_argument("query", help="Anime name to search.")
     _add_search_like_arguments(search_parser)
-    resolve_title_parser = subparsers.add_parser("resolve-title", help="Resolve a title into expanded search queries.")
-    resolve_title_parser.add_argument("query", help="Anime name to resolve.")
     download_parser = subparsers.add_parser("download", help="Search candidates and add the best one to qBittorrent.")
     download_parser.add_argument("query", help="Anime name to search.")
     _add_search_like_arguments(download_parser)
@@ -108,10 +106,6 @@ def main() -> None:
 
     if args.command == "search":
         raise SystemExit(run_search_command(args, config))
-        return
-
-    if args.command == "resolve-title":
-        raise SystemExit(run_resolve_title_command(args, config))
         return
 
     if args.command == "download":

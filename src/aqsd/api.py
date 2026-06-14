@@ -9,8 +9,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from aqsd.config import AppConfig
-from aqsd.discovery import SearchRequest, discover_search_candidates, resolve_search_title
-from aqsd.models import Candidate, ExpandedQueryDetail, ResolvedSubject, ScoreBreakdown, SearchDiagnostics, TitleEvidence
+from aqsd.discovery import SearchRequest, discover_search_candidates
+from aqsd.models import Candidate, ExpandedQueryDetail, ScoreBreakdown, SearchDiagnostics, TitleEvidence
 from aqsd.qbittorrent import QBittorrentClient
 
 
@@ -19,10 +19,6 @@ DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8765
 MAX_API_SEARCH_LIMIT = 100
 WEB_DIR = Path(__file__).with_name("web")
-
-
-class ResolveTitlePayload(BaseModel):
-    query: str
 
 
 class SearchPayload(BaseModel):
@@ -62,25 +58,6 @@ def create_api_app(config: AppConfig):
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return build_health_payload(config)
-
-    @app.post("/api/resolve-title")
-    def resolve_title(payload: ResolveTitlePayload) -> dict[str, Any]:
-        query = payload.query.strip()
-        if not query:
-            raise http_exception(status_code=400, detail="query must not be empty")
-
-        resolution = resolve_search_title(config, query)
-        return {
-            "query": query,
-            "expanded_queries": resolution.expanded_queries,
-            "expanded_query_details": [serialize_expanded_query_detail(item) for item in resolution.expanded_query_details],
-            "resolution_status": resolution.resolution_status,
-            "needs_review": resolution.needs_review,
-            "sources": _serialize_title_resolution_sources(resolution),
-            "resolved_subject": serialize_resolved_subject(resolution.resolved_subject),
-            "candidate_subjects": list(resolution.candidate_subjects),
-            "rejected_subjects": list(resolution.rejected_subjects),
-        }
 
     @app.post("/api/search")
     def search(payload: SearchPayload) -> dict[str, Any]:
@@ -131,35 +108,13 @@ def run_server_command(config: AppConfig, *, host: str = DEFAULT_API_HOST, port:
 def build_health_payload(config: AppConfig) -> dict[str, Any]:
     qb_configured = bool(config.qb.base_url.strip())
     qb_status = _probe_qb_status(config) if qb_configured else {"configured": False, "reachable": False}
-    bangumi_enabled = bool(config.metadata_sources.bangumi.enabled)
-    anilist_enabled = bool(config.metadata_sources.anilist.enabled)
-    payload = {
+    return {
         "ok": bool(qb_status.get("reachable")),
         "qbittorrent": qb_status,
         "sources": {
             "rss": any(source.enabled for source in config.rss_sources),
-            "nyaa": bool(config.search_sources.nyaa.enabled),
-            "torznab": bool(
-                config.search_sources.torznab.enabled
-                and any(endpoint.enabled for endpoint in config.search_sources.torznab.endpoints)
-            ),
-        },
-        "metadata_sources": {
-            "bangumi": {
-                "enabled": bangumi_enabled,
-            },
-            "anilist": {
-                "enabled": anilist_enabled,
-            },
-        },
-        "anilist": {
-            "enabled": anilist_enabled,
-        },
-        "bangumi": {
-            "enabled": bangumi_enabled,
         },
     }
-    return payload
 
 
 def serialize_candidate(candidate: Candidate, rank: int) -> dict[str, Any]:
@@ -239,7 +194,7 @@ def serialize_expanded_query_detail(detail: ExpandedQueryDetail) -> dict[str, An
     return asdict(detail)
 
 
-def serialize_resolved_subject(subject: ResolvedSubject | None) -> dict[str, Any] | None:
+def serialize_resolved_subject(subject: Any) -> dict[str, Any] | None:
     if subject is None:
         return None
     return asdict(subject)
@@ -282,26 +237,6 @@ def _serialize_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
-
-
-def _serialize_title_resolution_sources(resolution: Any) -> list[str]:
-    explicit_sources = getattr(resolution, "sources", None)
-    if explicit_sources:
-        return list(explicit_sources)
-
-    sources: list[str] = []
-    if getattr(resolution, "local_alias_matched", False):
-        sources.append("local_aliases")
-    if getattr(resolution, "cache_hit", False):
-        sources.append("cache")
-    if getattr(resolution, "source", "") in {"bangumi", "bangumi-cache"} or getattr(resolution, "bangumi_attempted", False):
-        sources.append("bangumi")
-    if getattr(resolution, "source", "") in {"anilist", "anilist-cache"} or getattr(resolution, "anilist_attempted", False):
-        sources.append("anilist")
-    if not sources:
-        source = getattr(resolution, "source", "") or "query"
-        sources.append(source)
-    return sources
 
 
 def _import_fastapi_runtime():

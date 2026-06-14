@@ -125,12 +125,12 @@ class ScorerTests(unittest.TestCase):
             url="https://example.test/strong",
             source="nyaa",
             matched_query="Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
-            matched_query_source="bangumi",
+            matched_query_source="local",
             matched_query_confidence=0.93,
             title_evidence=TitleEvidence(
                 type="romaji_near_match",
                 score=0.93,
-                reason="candidate title matched bangumi primary query",
+                reason="candidate title matched local primary query",
             ),
         )
         weak_candidate = Candidate(
@@ -157,7 +157,7 @@ class ScorerTests(unittest.TestCase):
                 "expanded_query_details": [
                     ExpandedQueryDetail(
                         text="Kamiina Botan, Yoeru Sugata wa Yuri no Hana",
-                        source="bangumi",
+                        source="local",
                         confidence=0.93,
                         language="romaji",
                         search_role="primary",

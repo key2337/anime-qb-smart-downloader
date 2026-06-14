@@ -6,12 +6,11 @@ from argparse import Namespace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from aqsd.cli import build_search_request, run_download_command, run_resolve_title_command, run_search_command
+from aqsd.cli import build_search_request, run_download_command, run_search_command
 from aqsd.config import AppConfig
 from aqsd.discovery import DiscoveryResult
 from aqsd.models import Candidate, ScoreBreakdown, ScoreReason, SearchDiagnostics
 from aqsd.probe import ProbeResult
-from aqsd.title_resolver import TitleResolution
 
 
 def _build_config() -> AppConfig:
@@ -36,12 +35,6 @@ def _build_alias_config() -> AppConfig:
             },
             "rss_sources": [
                 {"name": "mock", "url": "https://example.test/rss.xml", "enabled": True},
-            ],
-            "title_aliases": [
-                {
-                    "canonical": "一拳超人",
-                    "aliases": ["一拳超人", "One Punch Man", "One-Punch Man", "ワンパンマン"],
-                }
             ],
         }
     )
@@ -217,34 +210,7 @@ class SearchCliTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("没有找到符合字幕条件的结果，可尝试改为“不限字幕”。", rendered)
 
-    @patch("aqsd.cli.resolve_search_title")
-    def test_run_resolve_title_command_displays_expanded_queries(self, mock_resolve_search_title) -> None:
-        mock_resolve_search_title.return_value = TitleResolution(
-            canonical="Angel Beats!",
-            expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
-            source="anilist",
-            local_alias_matched=False,
-            cache_hit=False,
-            anilist_enabled=True,
-            anilist_attempted=True,
-        )
-        args = Namespace(query="天使的心跳")
-        output = io.StringIO()
-
-        exit_code = run_resolve_title_command(args, _build_config(), out=output)
-
-        rendered = output.getvalue()
-        self.assertEqual(exit_code, 0)
-        self.assertIn("query: 天使的心跳", rendered)
-        self.assertIn("canonical: Angel Beats!", rendered)
-        self.assertIn("source: anilist", rendered)
-        self.assertIn("anilist_enabled: yes", rendered)
-        self.assertIn("cache_hit: no", rendered)
-        self.assertIn("- Angel Beats!", rendered)
-        mock_resolve_search_title.assert_called_once()
-
     @patch("aqsd.main.run_search_command")
-    @patch("aqsd.main.run_resolve_title_command")
     @patch("aqsd.main.run_once")
     @patch("aqsd.main.run_dry_run")
     @patch("aqsd.main.check_connections")
@@ -256,7 +222,6 @@ class SearchCliTests(unittest.TestCase):
         mock_check_connections,
         mock_run_dry_run,
         mock_run_once,
-        mock_run_resolve_title_command,
         mock_run_search_command,
     ) -> None:
         from aqsd.main import main
@@ -278,45 +243,6 @@ class SearchCliTests(unittest.TestCase):
         self.assertEqual(called_args.subtitle, "embedded")
         self.assertTrue(called_args.raw_only)
         self.assertIs(called_config, config)
-        mock_run_once.assert_not_called()
-        mock_run_dry_run.assert_not_called()
-        mock_check_connections.assert_not_called()
-        mock_run_resolve_title_command.assert_not_called()
-
-    @patch("aqsd.main.run_download_command")
-    @patch("aqsd.main.run_search_command")
-    @patch("aqsd.main.run_resolve_title_command")
-    @patch("aqsd.main.run_once")
-    @patch("aqsd.main.run_dry_run")
-    @patch("aqsd.main.check_connections")
-    @patch("aqsd.main.load_config")
-    @patch("sys.argv", ["aqsd", "resolve-title", "天使的心跳"])
-    def test_main_dispatches_resolve_title_without_running_other_modes(
-        self,
-        mock_load_config,
-        mock_check_connections,
-        mock_run_dry_run,
-        mock_run_once,
-        mock_run_resolve_title_command,
-        mock_run_search_command,
-        mock_run_download_command,
-    ) -> None:
-        from aqsd.main import main
-
-        config = _build_config()
-        mock_load_config.return_value = config
-        mock_run_resolve_title_command.return_value = 0
-
-        with self.assertRaises(SystemExit) as exc:
-            main()
-
-        self.assertEqual(exc.exception.code, 0)
-        mock_run_resolve_title_command.assert_called_once()
-        called_args, called_config = mock_run_resolve_title_command.call_args.args
-        self.assertEqual(called_args.query, "天使的心跳")
-        self.assertIs(called_config, config)
-        mock_run_search_command.assert_not_called()
-        mock_run_download_command.assert_not_called()
         mock_run_once.assert_not_called()
         mock_run_dry_run.assert_not_called()
         mock_check_connections.assert_not_called()
@@ -701,7 +627,7 @@ class SearchCliTests(unittest.TestCase):
     @patch("aqsd.cli.QBittorrentClient")
     @patch("aqsd.cli.Database")
     @patch("aqsd.discovery.fetch_rss")
-    def test_run_download_command_uses_title_aliases_for_search(
+    def test_run_download_command_adds_top_candidate_to_qbittorrent(
         self,
         mock_fetch_rss,
         mock_database_cls,
@@ -717,7 +643,7 @@ class SearchCliTests(unittest.TestCase):
         ]
         mock_database_cls.return_value.create_download_task.return_value = 123
         args = Namespace(
-            query="一拳超人",
+            query="One Punch Man",
             episodes=[],
             resolution=None,
             groups=[],
@@ -734,29 +660,6 @@ class SearchCliTests(unittest.TestCase):
         mock_qb_cls.return_value.add_torrent.assert_called_once()
         added_url = mock_qb_cls.return_value.add_torrent.call_args.args[0]
         self.assertEqual(added_url, "https://example.test/opm-1")
-
-    @patch("aqsd.cli.resolve_search_title")
-    def test_run_resolve_title_command_can_display_bangumi_expansion(self, mock_resolve_search_title) -> None:
-        mock_resolve_search_title.return_value = TitleResolution(
-            canonical="Angel Beats!",
-            expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
-            source="bangumi",
-            local_alias_matched=False,
-            cache_hit=False,
-            bangumi_enabled=True,
-            bangumi_attempted=True,
-            anilist_enabled=True,
-            anilist_attempted=True,
-        )
-        output = io.StringIO()
-
-        exit_code = run_resolve_title_command(Namespace(query="天使的心跳"), _build_config(), out=output)
-
-        rendered = output.getvalue()
-        self.assertEqual(exit_code, 0)
-        self.assertIn("source: bangumi", rendered)
-        self.assertIn("bangumi_enabled: yes", rendered)
-        self.assertIn("- Angel Beats!", rendered)
 
     @patch("aqsd.main.run_download_command")
     @patch("aqsd.main.run_search_command")

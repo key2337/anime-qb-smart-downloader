@@ -26,14 +26,6 @@ def _build_config() -> AppConfig:
                 "password": "pass",
             },
             "rss_sources": [{"name": "mock", "url": "https://example.test/rss.xml", "enabled": True}],
-            "search_sources": {
-                "nyaa": {"enabled": True},
-                "torznab": {"enabled": False, "endpoints": []},
-            },
-            "metadata_sources": {
-                "bangumi": {"enabled": True},
-                "anilist": {"enabled": True},
-            },
         }
     )
 
@@ -63,8 +55,6 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("解析标题", response.text)
         self.assertIn("展开详情", response.text)
-        self.assertIn("metadataStatusLabel", response.text)
-        self.assertIn("Bangumi", response.text)
 
     def test_style_css_can_be_accessed(self) -> None:
         client = TestClient(create_api_app(self.config))
@@ -85,46 +75,7 @@ class ApiTests(unittest.TestCase):
         payload = response.json()
         self.assertIn("ok", payload)
         self.assertTrue(payload["ok"])
-        self.assertTrue(payload["bangumi"]["enabled"])
-        self.assertTrue(payload["anilist"]["enabled"])
-        self.assertTrue(payload["metadata_sources"]["bangumi"]["enabled"])
-        self.assertTrue(payload["metadata_sources"]["anilist"]["enabled"])
-
-    @patch("aqsd.api.resolve_search_title")
-    def test_resolve_title_returns_bangumi_expanded_queries(self, mock_resolve_search_title) -> None:
-        mock_resolve_search_title.return_value = Mock(
-            expanded_queries=["天使的心跳", "Angel Beats!", "エンジェルビーツ"],
-            expanded_query_details=[],
-            resolution_status="resolved_high_confidence",
-            needs_review=False,
-            source="bangumi",
-            sources=["bangumi", "anilist"],
-            resolved_subject=None,
-            candidate_subjects=[],
-            rejected_subjects=[],
-            local_alias_matched=False,
-            cache_hit=False,
-            bangumi_attempted=True,
-            anilist_attempted=True,
-        )
-        client = TestClient(create_api_app(self.config))
-
-        response = client.post("/api/resolve-title", json={"query": "天使的心跳"})
-
-        self.assertEqual(response.status_code, 200)
-        payload = response.json()
-        self.assertEqual(payload["expanded_queries"][0], "天使的心跳")
-        self.assertIn("Angel Beats!", payload["expanded_queries"])
-        self.assertIn("bangumi", payload["sources"])
-        self.assertIn("anilist", payload["sources"])
-
-    def test_resolve_title_empty_query_returns_error(self) -> None:
-        client = TestClient(create_api_app(self.config))
-
-        response = client.post("/api/resolve-title", json={"query": "   "})
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("query must not be empty", response.json()["detail"])
+        self.assertTrue(payload["sources"]["rss"])
 
     @patch("aqsd.api.discover_search_candidates")
     def test_search_returns_candidates(self, mock_discover_search_candidates) -> None:

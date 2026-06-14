@@ -29,51 +29,6 @@ class RSSSourceSettings(BaseModel):
     enabled: bool = True
 
 
-class NyaaSearchSourceSettings(BaseModel):
-    enabled: bool = False
-    base_url: str = "https://nyaa.si"
-    default_category: str = "1_2"
-    timeout_seconds: int = 15
-
-
-class TorznabEndpointSettings(BaseModel):
-    name: str
-    url: str
-    api_key: str
-    categories: list[str] = Field(default_factory=list)
-    timeout_seconds: int = 15
-    enabled: bool = True
-
-
-class TorznabSearchSourceSettings(BaseModel):
-    enabled: bool = False
-    endpoints: list[TorznabEndpointSettings] = Field(default_factory=list)
-
-
-class SearchSourcesSettings(BaseModel):
-    nyaa: NyaaSearchSourceSettings = Field(default_factory=NyaaSearchSourceSettings)
-    torznab: TorznabSearchSourceSettings = Field(default_factory=TorznabSearchSourceSettings)
-
-
-class AniListMetadataSourceSettings(BaseModel):
-    enabled: bool = False
-    endpoint: str = "https://graphql.anilist.co"
-    timeout_seconds: int = 15
-    cache_enabled: bool = True
-    cache_ttl_days: int = 30
-
-
-class BangumiMetadataSourceSettings(BaseModel):
-    enabled: bool = False
-    timeout_seconds: int = 8
-    max_results: int = 5
-
-
-class MetadataSourcesSettings(BaseModel):
-    bangumi: BangumiMetadataSourceSettings = Field(default_factory=BangumiMetadataSourceSettings)
-    anilist: AniListMetadataSourceSettings = Field(default_factory=AniListMetadataSourceSettings)
-
-
 class FallbackPolicy(BaseModel):
     enabled: bool = True
     check_after_minutes: int = 10
@@ -89,11 +44,6 @@ class ProbePolicy(BaseModel):
     duration_seconds: int = 30
     min_speed_kbps: int = 50
     delete_losers: bool = True
-
-
-class TitleAliasSettings(BaseModel):
-    canonical: str
-    aliases: list[str] = Field(default_factory=list)
 
 
 class AnimeRuleSettings(BaseModel):
@@ -113,14 +63,13 @@ class AnimeRuleSettings(BaseModel):
 
 
 class AppConfig(BaseModel):
+    model_config = {"extra": "ignore"}
+
     app: AppSettings = Field(default_factory=AppSettings)
     qbittorrent: QBittorrentSettings
     rss_sources: list[RSSSourceSettings] = Field(default_factory=list)
-    search_sources: SearchSourcesSettings = Field(default_factory=SearchSourcesSettings)
-    metadata_sources: MetadataSourcesSettings = Field(default_factory=MetadataSourcesSettings)
     fallback_policy: FallbackPolicy = Field(default_factory=FallbackPolicy)
     probe_policy: ProbePolicy = Field(default_factory=ProbePolicy)
-    title_aliases: list[TitleAliasSettings] = Field(default_factory=list)
     profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
     anime: list[AnimeRuleSettings] = Field(default_factory=list)
 
