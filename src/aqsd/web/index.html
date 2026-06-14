@@ -37,6 +37,10 @@
             <input id="episode" name="episode" type="text" placeholder="例如 01 或 21">
           </label>
           <label>
+            <span>季度</span>
+            <input id="season" name="season" type="text" placeholder="例如 2">
+          </label>
+          <label>
             <span>分辨率</span>
             <select id="resolution" name="resolution">
               <option value="">不限</option>
@@ -72,20 +76,7 @@
           </label>
         </div>
 
-        <div class="checkbox-row">
-          <label class="checkbox">
-            <input id="raw-only" name="raw_only" type="checkbox">
-            <span>只看 RAW</span>
-          </label>
-          <label class="checkbox">
-            <input id="exclude-batch" name="exclude_batch" type="checkbox">
-            <span>排除合集</span>
-          </label>
-          <label class="checkbox">
-            <input id="batch-only" name="batch_only" type="checkbox">
-            <span>只要合集</span>
-          </label>
-        </div>
+        <div class="checkbox-row"></div>
       </form>
     </section>
 
@@ -106,6 +97,6 @@
     </section>
   </main>
 
-  <script src="/app.js?v=3"></script>
+  <script src="/app.js?v=5"></script>
 </body>
 </html>

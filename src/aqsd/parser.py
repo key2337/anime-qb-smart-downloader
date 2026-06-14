@@ -5,7 +5,8 @@ import re
 from aqsd.models import Candidate
 
 
-RESOLUTION_RE = re.compile(r"\b(2160p|1080p|720p|480p)\b", re.IGNORECASE)
+RESOLUTION_RE = re.compile(r"\b(3840x2160|1920x1080|1280x720|2160p|1080p|720p|480p)\b", re.IGNORECASE)
+_WXH_TO_P = {"3840x2160": "2160p", "1920x1080": "1080p", "1280x720": "720p"}
 GROUP_RE = re.compile(r"^\[([^\]]+)\]")
 CODEC_SUFFIX_GROUP_RE = re.compile(r"\b(?:x264|x265|h[\s.]?264|h[\s.]?265)[- ](?P<group>[A-Za-z][A-Za-z0-9-]{2,})\b", re.IGNORECASE)
 EXPLICIT_EPISODE_PATTERNS = [
@@ -29,6 +30,7 @@ SOURCE_PATTERNS = {
 }
 HEVC_RE = re.compile(r"\b(?:hevc|x265|h[\s.]?265)\b", re.IGNORECASE)
 BATCH_MARKER_RE = re.compile(r"\b(?:batch|complete|end)\b", re.IGNORECASE)
+FREE_TEXT_RANGE_RE = re.compile(r"(?<![Ss])(?<!\d)(?P<start>\d{1,3})\s*[-~]\s*(?P<end>\d{1,3})(?!\d)")
 DUAL_AUDIO_RE = re.compile(r"\bdual(?:[ -]?audio)?\b", re.IGNORECASE)
 EXTERNAL_SUB_MARKERS = ("外挂", "外掛", "外挂字幕", "外掛字幕", "external")
 EMBEDDED_SUB_MARKERS = ("chs", "cht", "简中", "簡中", "繁中", "内嵌", "內嵌", "中字", "简繁", "簡繁", "内封", "內封")
@@ -176,7 +178,8 @@ def parse_candidate(candidate: Candidate) -> Candidate:
 
     resolution_match = RESOLUTION_RE.search(title)
     if resolution_match:
-        candidate.resolution = resolution_match.group(1).lower()
+        raw = resolution_match.group(1).lower()
+        candidate.resolution = _WXH_TO_P.get(raw, raw)
 
     candidate.season = _extract_season(title)
     candidate.is_raw = any(marker in lower_title for marker in RAW_MARKERS)
@@ -184,13 +187,18 @@ def parse_candidate(candidate: Candidate) -> Candidate:
     if candidate.source_type == "WEB-DL":
         candidate.is_raw = True
 
+    free_text_range = FREE_TEXT_RANGE_RE.search(title)
     candidate.is_batch = (
-        bool(BATCH_MARKER_RE.search(title)) or "合集" in title or _bracket_has_range(title)
+        bool(BATCH_MARKER_RE.search(title)) or "合集" in title or _bracket_has_range(title) or bool(free_text_range)
     )
     candidate.is_hevc = bool(HEVC_RE.search(title))
     candidate.has_dual_audio = bool(DUAL_AUDIO_RE.search(title))
-    candidate.episode, range_or_revision = _extract_episode(title)
-    candidate.is_v2 = range_or_revision or bool(re.search(r"\bv[23]\b", lower_title))
+    if free_text_range:
+        candidate.episode = free_text_range.group("start").zfill(2)
+        candidate.is_v2 = bool(re.search(r"\bv[23]\b", lower_title))
+    else:
+        candidate.episode, range_or_revision = _extract_episode(title)
+        candidate.is_v2 = range_or_revision or bool(re.search(r"\bv[23]\b", lower_title))
     candidate.subtitle_type = _extract_subtitle_type(title, candidate)
     candidate.parsed_title = _infer_parsed_title(title)
 

@@ -1,6 +1,8 @@
 const state = {
   lastExpandedQueries: [],
   lastExpandedQueryDetails: [],
+  lastQuery: "",
+  allCandidates: [],
 };
 
 const elements = {
@@ -17,9 +19,7 @@ const elements = {
   resolution: document.getElementById("resolution"),
   subtitle: document.getElementById("subtitle"),
   group: document.getElementById("group"),
-  rawOnly: document.getElementById("raw-only"),
-  excludeBatch: document.getElementById("exclude-batch"),
-  batchOnly: document.getElementById("batch-only"),
+  season: document.getElementById("season"),
   releaseMode: document.getElementById("release-mode"),
   limit: document.getElementById("limit"),
 };
@@ -67,46 +67,171 @@ function handleResolveTitle() {
 
 async function handleSearch() {
   clearFormError();
-  const payload = buildSearchPayload();
-  if (!payload.query) {
+  const currentQuery = elements.query.value.trim();
+  if (!currentQuery) {
     showFormError("请先输入动漫标题，再执行搜索。");
     return;
   }
 
-  setLoading(true, "正在搜索...");
-  elements.results.innerHTML = "";
-  try {
-    const response = await apiRequest("/api/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    state.lastExpandedQueries = response.expanded_queries || [];
-    state.lastExpandedQueryDetails = (response.diagnostics && response.diagnostics.expanded_query_details) || [];
-    renderExpandedQueries(state.lastExpandedQueries, state.lastExpandedQueryDetails);
-    renderResults(response.candidates || []);
-    renderDiagnostics(response.diagnostics || null, response.candidates || []);
-  } catch (error) {
-    renderResults([]);
-    renderDiagnostics(null, []);
-    showFormError(`搜索失败：${error.message}`);
-  } finally {
-    setLoading(false);
+  const queryChanged = currentQuery !== state.lastQuery;
+
+  if (queryChanged) {
+    setLoading(true, "正在搜索...");
+    elements.results.innerHTML = "";
+    state.lastQuery = currentQuery;
+    try {
+      const payload = buildSearchPayload();
+      const response = await apiRequest("/api/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      state.allCandidates = response.candidates || [];
+      state.lastExpandedQueries = response.expanded_queries || [];
+      state.lastExpandedQueryDetails = (response.diagnostics && response.diagnostics.expanded_query_details) || [];
+      renderExpandedQueries(state.lastExpandedQueries, state.lastExpandedQueryDetails);
+    } catch (error) {
+      state.allCandidates = [];
+      renderResults([]);
+      renderDiagnostics(null, []);
+      showFormError(`搜索失败：${error.message}`);
+      return;
+    } finally {
+      setLoading(false);
+    }
   }
+
+  const filters = readFilters();
+  const { filtered, dropReasons } = applyFilters(state.allCandidates, filters);
+  const limited = filtered.slice(0, filters.limit);
+  const diagnostics = buildClientDiagnostics(state.allCandidates.length, filtered.length, limited.length, dropReasons, filters);
+
+  renderResults(limited);
+  renderDiagnostics(diagnostics, limited);
 }
 
 function buildSearchPayload() {
   return {
     query: elements.query.value.trim(),
+    limit: 100,
+  };
+}
+
+function readFilters() {
+  return {
+    season: normalizeOptionalInt(elements.season.value),
     episode: normalizeOptionalText(elements.episode.value),
     resolution: normalizeOptionalText(elements.resolution.value),
     subtitle: normalizeOptionalText(elements.subtitle.value),
     group: normalizeOptionalText(elements.group.value),
-    raw_only: elements.rawOnly.checked,
-    exclude_batch: elements.excludeBatch.checked,
-    batch_only: elements.batchOnly.checked,
-    release_mode: elements.batchOnly.checked ? "batch" : (normalizeOptionalText(elements.releaseMode.value) || "any"),
+    releaseMode: normalizeOptionalText(elements.releaseMode.value) || "any",
     limit: normalizeLimit(elements.limit.value),
+  };
+}
+
+function applyFilters(candidates, filters) {
+  const filtered = [];
+  const dropReasons = {};
+
+  for (const c of candidates) {
+    const p = c.parsed || {};
+
+    if (filters.season !== null) {
+      const actualSeason = p.season != null && p.season !== "" ? Number(p.season) : 1;
+      if (actualSeason !== filters.season) {
+        dropReasons.season = (dropReasons.season || 0) + 1;
+        continue;
+      }
+    }
+
+    if (filters.episode && !episodeMatchesFilter(p.episode, filters.episode, p.is_batch, filters.releaseMode)) {
+      dropReasons.episode = (dropReasons.episode || 0) + 1;
+      continue;
+    }
+
+    if (filters.resolution && (p.resolution || "").toLowerCase() !== filters.resolution.toLowerCase()) {
+      dropReasons.resolution = (dropReasons.resolution || 0) + 1;
+      continue;
+    }
+
+    if (filters.group && normalizeText(p.group) !== normalizeText(filters.group)) {
+      dropReasons.group = (dropReasons.group || 0) + 1;
+      continue;
+    }
+
+    if (filters.subtitle && (p.subtitle_type || "").toLowerCase() !== filters.subtitle.toLowerCase()) {
+      dropReasons.subtitle = (dropReasons.subtitle || 0) + 1;
+      continue;
+    }
+
+    if (filters.releaseMode === "episode" && p.is_batch) {
+      dropReasons.release_mode = (dropReasons.release_mode || 0) + 1;
+      continue;
+    }
+    if (filters.releaseMode === "batch" && !p.is_batch) {
+      dropReasons.release_mode = (dropReasons.release_mode || 0) + 1;
+      continue;
+    }
+
+    filtered.push(c);
+  }
+
+  return { filtered, dropReasons };
+}
+
+function buildClientDiagnostics(totalCount, afterFilterCount, afterLimitCount, dropReasons, filters) {
+  const beforeCount = totalCount;
+  const afterCount = afterFilterCount;
+  const noCandidates = afterLimitCount === 0;
+  const filteredOut = beforeCount > 0 && afterCount === 0;
+
+  const suggestions = [];
+  if (dropReasons.subtitle && noCandidates) {
+    suggestions.push("没有找到符合字幕条件的结果，可尝试改为“不限字幕”。");
+  }
+  if (dropReasons.group && noCandidates) {
+    suggestions.push("可尝试去掉字幕组限制。");
+  }
+  if (dropReasons.resolution) {
+    suggestions.push("可尝试放宽分辨率条件，例如改为 1080p、720p 或不限制。");
+  }
+  if (dropReasons.episode && filteredOut) {
+    suggestions.push("可能是集数解析失败，可尝试清空集数后查看候选，或尝试合集 / 整季资源。");
+  }
+  if (filters.releaseMode !== "any" && noCandidates) {
+    suggestions.push("可尝试改为不限资源类型。");
+  }
+  if (filters.releaseMode !== "batch" && noCandidates) {
+    suggestions.push("也可尝试搜索合集 / 整季资源。");
+  }
+  if (filters.season !== null && noCandidates) {
+    suggestions.push("可尝试去掉季度限制。");
+  }
+
+  const activeFilters = { release_mode: filters.releaseMode };
+  if (filters.season !== null) activeFilters.season = filters.season;
+  if (filters.episode) activeFilters.episode = filters.episode;
+  if (filters.resolution) activeFilters.resolution = filters.resolution;
+  if (filters.group) activeFilters.group = filters.group;
+  if (filters.subtitle) activeFilters.subtitle = filters.subtitle;
+  if (filters.limit) activeFilters.limit = filters.limit;
+
+  return {
+    original_query: state.lastQuery,
+    expanded_queries: state.lastExpandedQueries,
+    expanded_query_details: state.lastExpandedQueryDetails,
+    resolution_status: "unresolved",
+    needs_review: false,
+    sources: ["RSS"],
+    active_filters: activeFilters,
+    candidate_count_before_filter: beforeCount,
+    candidate_count_after_filter: afterCount,
+    stage_counts: {},
+    filter_drop_reasons: dropReasons,
+    suggestions: suggestions.slice(0, 6),
+    resolved_subject: null,
+    candidate_subjects: [],
+    rejected_subjects: [],
   };
 }
 
@@ -173,8 +298,8 @@ function renderResults(candidates) {
               <div class="candidate-summary">
                 <span><strong>评分：</strong>${formatValue(candidate.score)}</span>
                 <span><strong>来源：</strong>${escapeHtml(candidate.source || "-")}</span>
-                <span><strong>做种数：</strong>${formatValue(candidate.seeders)}</span>
                 <span><strong>发布时间：</strong>${escapeHtml(formatDate(candidate.published_at))}</span>
+                <span><strong>季度：</strong>${formatSeason(parsed.season)}</span>
                 <span><strong>集数：</strong>${escapeHtml(formatValue(parsed.episode))}</span>
                 <span><strong>分辨率：</strong>${escapeHtml(formatValue(parsed.resolution))}</span>
                 <span><strong>字幕组：</strong>${escapeHtml(formatValue(parsed.group))}</span>
@@ -439,6 +564,26 @@ function normalizeOptionalText(value) {
   return trimmed || null;
 }
 
+function normalizeOptionalInt(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  const num = Number.parseInt(trimmed, 10);
+  return Number.isNaN(num) ? null : num;
+}
+
+function normalizeText(value) {
+  return (value || "").toLowerCase().replace(/[\s_-]+/g, " ").trim();
+}
+
+function episodeMatchesFilter(candidateEpisode, filterEpisode, isBatch, releaseMode) {
+  if (isBatch && releaseMode === "batch") return true;
+  if (!candidateEpisode) return false;
+  if (candidateEpisode === filterEpisode) return true;
+  const a = String(candidateEpisode).replace(/^0+/, "") || "0";
+  const b = String(filterEpisode).replace(/^0+/, "") || "0";
+  return a === b;
+}
+
 function normalizeLimit(value) {
   const parsed = Number.parseInt(String(value || "20"), 10);
   if (Number.isNaN(parsed)) {
@@ -488,6 +633,17 @@ function formatDelta(value) {
   return numeric >= 0 ? `+${rounded}` : rounded;
 }
 
+function formatSeason(value) {
+  if (value == null || value === "") {
+    return "未知";
+  }
+  const numeric = Number(value);
+  if (!Number.isNaN(numeric) && numeric > 0) {
+    return `第${numeric}季`;
+  }
+  return String(value);
+}
+
 function formatSubtitleType(value) {
   const mapping = {
     embedded: "内嵌字幕",
@@ -500,6 +656,7 @@ function formatSubtitleType(value) {
 
 function formatFilterKey(key) {
   const mapping = {
+    season: "季度",
     episode: "集数",
     resolution: "分辨率",
     group: "字幕组",

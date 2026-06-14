@@ -34,6 +34,7 @@ class SearchRequest:
     expanded_queries: list[str] = field(default_factory=list)
     expanded_query_details: list[ExpandedQueryDetail] = field(default_factory=list)
     episodes: list[str] = field(default_factory=list)
+    season: int | None = None
     resolution: str | None = None
     groups: list[str] = field(default_factory=list)
     subtitle_type: str | None = None
@@ -47,6 +48,7 @@ class SearchRequest:
 _DEFAULT_STAGE_COUNTS = {
     "count_after_fetch": 0,
     "count_after_title_match": 0,
+    "count_after_season_filter": 0,
     "count_after_exclude_batch_filter": 0,
     "count_after_release_mode_filter": 0,
     "count_after_episode_filter": 0,
@@ -307,6 +309,12 @@ def _filter_candidate(
     request: SearchRequest,
     diagnostics: SearchDiagnostics | None,
 ) -> str | None:
+    if request.season is not None:
+        actual_season = candidate.season if candidate.season is not None else 1
+        if actual_season != request.season:
+            return "season"
+    _increment_stage(diagnostics, "count_after_season_filter")
+
     if request.exclude_batch and candidate.is_batch:
         return "exclude_batch"
     _increment_stage(diagnostics, "count_after_exclude_batch_filter")
@@ -440,6 +448,8 @@ def _value_in_normalized_set(value: str | None, candidates: list[str]) -> bool:
 
 def _build_active_filters(request: SearchRequest) -> dict[str, object]:
     filters: dict[str, object] = {"release_mode": request.release_mode}
+    if request.season is not None:
+        filters["season"] = request.season
     if request.episodes:
         filters["episode"] = ", ".join(request.episodes)
     if request.resolution:
@@ -482,6 +492,8 @@ def _build_search_suggestions(diagnostics: SearchDiagnostics) -> list[str]:
         suggestions.append("可尝试改为不限资源类型。")
     if diagnostics.active_filters.get("release_mode") != "batch" and no_results:
         suggestions.append("也可尝试搜索合集 / 整季资源。")
+    if "season" in diagnostics.active_filters and no_results:
+        suggestions.append("可尝试去掉季度限制。")
     if "raw_only" in diagnostics.active_filters and no_results:
         suggestions.append("只看 RAW 可能过严，可先取消 RAW 限制。")
 

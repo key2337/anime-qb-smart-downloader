@@ -310,6 +310,52 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual([candidate.resolution for candidate in result.candidates], ["1080p"])
 
     @patch("aqsd.discovery.fetch_rss")
+    def test_discover_search_candidates_filters_by_season(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Example Anime S1 - 01 [1080p][CHS]",
+                url="https://example.test/s1",
+                source="mock",
+            ),
+            Candidate(
+                title="[LoliHouse] Example Anime S2 - 01 [1080p][CHS]",
+                url="https://example.test/s2",
+                source="mock",
+            ),
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime", season=2),
+        )
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].season, 2)
+
+    @patch("aqsd.discovery.fetch_rss")
+    def test_unmarked_season_treated_as_season_1(self, mock_fetch_rss) -> None:
+        mock_fetch_rss.return_value = [
+            Candidate(
+                title="[LoliHouse] Example Anime - 01 [1080p][CHS]",
+                url="https://example.test/s1",
+                source="mock",
+            ),
+            Candidate(
+                title="[LoliHouse] Example Anime S2 - 01 [1080p][CHS]",
+                url="https://example.test/s2",
+                source="mock",
+            ),
+        ]
+
+        result = discover_search_candidates(
+            _build_config(),
+            SearchRequest(query="Example Anime", season=1),
+        )
+
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0].season, None)
+
+    @patch("aqsd.discovery.fetch_rss")
     def test_discover_search_candidates_filters_by_group(self, mock_fetch_rss) -> None:
         mock_fetch_rss.return_value = [
             Candidate(

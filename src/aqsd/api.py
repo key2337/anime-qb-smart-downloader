@@ -24,6 +24,7 @@ WEB_DIR = Path(__file__).with_name("web")
 class SearchPayload(BaseModel):
     query: str
     episode: str | None = None
+    season: str | None = None
     resolution: str | None = None
     subtitle: str | None = None
     group: str | None = None
@@ -67,9 +68,11 @@ def create_api_app(config: AppConfig):
 
         limit = max(1, min(int(payload.limit or 20), MAX_API_SEARCH_LIMIT))
         release_mode = "batch" if payload.batch_only else payload.release_mode
+        season = _parse_int(payload.season)
         request = SearchRequest(
             query=query,
             episodes=[payload.episode] if payload.episode else [],
+            season=season,
             resolution=payload.resolution,
             groups=[payload.group] if payload.group else [],
             subtitle_type=None if payload.subtitle in (None, "", "any") else payload.subtitle,
@@ -131,6 +134,7 @@ def serialize_candidate(candidate: Candidate, rank: int) -> dict[str, Any]:
         "url": candidate_url or None,
         "parsed": {
             "episode": candidate.episode,
+            "season": candidate.season,
             "resolution": candidate.resolution,
             "group": candidate.group,
             "subtitle_type": candidate.subtitle_type,
@@ -237,6 +241,18 @@ def _serialize_datetime(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.isoformat()
+
+
+def _parse_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        return int(stripped)
+    except ValueError:
+        return None
 
 
 def _import_fastapi_runtime():
