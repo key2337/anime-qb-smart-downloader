@@ -13,7 +13,6 @@
         <h1>AQSD 动漫搜索工作台</h1>
         <p class="subtitle">本地搜索、标题解析、评分解释，以及无结果时的排查建议。</p>
       </div>
-      <button type="button" class="button button-muted" id="download-placeholder" disabled>下载功能本阶段暂未实现</button>
     </header>
 
     <section class="card">
@@ -27,7 +26,6 @@
       <form id="search-form">
         <div class="toolbar">
           <input id="query" name="query" type="text" placeholder="输入动漫标题" autocomplete="off">
-          <button type="button" class="button" id="resolve-button">解析标题</button>
           <button type="submit" class="button button-primary" id="search-button">搜索</button>
         </div>
 
@@ -76,7 +74,6 @@
           </label>
         </div>
 
-        <div class="checkbox-row"></div>
       </form>
     </section>
 
@@ -95,8 +92,13 @@
       <h2>搜索诊断</h2>
       <div id="diagnostics" class="muted">诊断信息会在搜索后显示。</div>
     </section>
+
+    <section class="card" id="cart-section">
+      <h2>下载队列</h2>
+      <div id="carts" class="muted">暂无下载任务。搜索后勾选候选，点击"加入下载队列"。</div>
+    </section>
   </main>
 
-  <script src="/app.js?v=6"></script>
+  <script src="/app.js?v=8"></script>
 </body>
 </html>

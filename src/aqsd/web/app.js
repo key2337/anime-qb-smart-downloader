@@ -3,6 +3,7 @@ const state = {
   lastExpandedQueryDetails: [],
   lastQuery: "",
   allCandidates: [],
+  carts: [],
 };
 
 const elements = {
@@ -13,7 +14,7 @@ const elements = {
   results: document.getElementById("results"),
   diagnostics: document.getElementById("diagnostics"),
   searchForm: document.getElementById("search-form"),
-  resolveButton: document.getElementById("resolve-button"),
+
   query: document.getElementById("query"),
   episode: document.getElementById("episode"),
   resolution: document.getElementById("resolution"),
@@ -22,13 +23,13 @@ const elements = {
   season: document.getElementById("season"),
   releaseMode: document.getElementById("release-mode"),
   limit: document.getElementById("limit"),
+  carts: document.getElementById("carts"),
 };
 
 document.addEventListener("DOMContentLoaded", () => {
   void loadHealth();
-  elements.resolveButton.addEventListener("click", () => {
-    void handleResolveTitle();
-  });
+  void loadCarts();
+
   elements.searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
     void handleSearch();
@@ -44,6 +45,19 @@ document.addEventListener("DOMContentLoaded", () => {
       void handleDownload(downloadBtn);
     }
   });
+  elements.carts.addEventListener("click", (event) => {
+    const startBtn = event.target.closest(".cart-start-button");
+    if (startBtn) {
+      void handleStartCart(startBtn);
+      return;
+    }
+    const deleteBtn = event.target.closest(".cart-delete-button");
+    if (deleteBtn) {
+      void handleDeleteCart(deleteBtn);
+      return;
+    }
+  });
+  setInterval(() => { void loadCarts(); }, 30000);
 });
 
 async function loadHealth() {
@@ -56,18 +70,6 @@ async function loadHealth() {
   }
 }
 
-function handleResolveTitle() {
-  clearFormError();
-  const query = elements.query.value.trim();
-  if (!query) {
-    showFormError('请先输入动漫标题。');
-    return;
-  }
-
-  state.lastExpandedQueries = [query];
-  state.lastExpandedQueryDetails = [];
-  renderExpandedQueries([query], []);
-}
 
 async function handleSearch() {
   clearFormError();
@@ -290,32 +292,42 @@ function renderResults(candidates) {
     return;
   }
 
-  elements.results.innerHTML = candidates
+  const toolbar = `
+    <div class="add-to-cart-bar hidden" id="add-to-cart-bar">
+      <button type="button" class="button button-primary" id="add-to-cart-button">加入下载队列</button>
+      <span class="muted" id="cart-selection-count"></span>
+    </div>
+  `;
+
+  elements.results.innerHTML = toolbar + candidates
     .map((candidate, index) => {
       const parsed = candidate.parsed || {};
       const detailId = `candidate-details-${index + 1}`;
+      const itemId = `candidate-select-${index}`;
       return `
         <article class="candidate-card">
           <div class="candidate-header">
-            <div>
-              <div class="candidate-title">#${candidate.rank} ${escapeHtml(candidate.title || "-")}</div>
-              <div class="candidate-summary">
-                <span><strong>评分：</strong>${formatValue(candidate.score)}</span>
-                <span><strong>来源：</strong>${escapeHtml(candidate.source || "-")}</span>
-                <span><strong>发布时间：</strong>${escapeHtml(formatDate(candidate.published_at))}</span>
-                <span><strong>季度：</strong>${formatSeason(parsed.season)}</span>
-                <span><strong>集数：</strong>${escapeHtml(formatValue(parsed.episode))}</span>
-                <span><strong>分辨率：</strong>${escapeHtml(formatValue(parsed.resolution))}</span>
-                <span><strong>字幕组：</strong>${escapeHtml(formatValue(parsed.group))}</span>
-                <span><strong>字幕类型：</strong>${escapeHtml(formatSubtitleType(parsed.subtitle_type))}</span>
-                <span><strong>合集：</strong>${boolOrUnknown(parsed.is_batch)}</span>
-                <span><strong>RAW：</strong>${boolOrUnknown(parsed.is_raw)}</span>
-                <span><strong>Magnet：</strong>${candidate.magnet ? "有" : "无"}</span>
-                <span><strong>URL：</strong>${candidate.url ? "有" : "无"}</span>
-              </div>
+            <div class="candidate-title-row">
+              <input type="checkbox" class="candidate-select" id="${itemId}" data-candidate-index="${index}">
+              <label for="${itemId}" class="candidate-title">#${candidate.rank} ${escapeHtml(candidate.title || "-")}</label>
             </div>
-            <button type="button" class="button toggle-details" data-target="${detailId}" aria-expanded="false">展开详情</button>
-            <button type="button" class="button download-button" data-url="${escapeAttr(candidate.magnet || candidate.url || "")}" data-title="${escapeAttr(candidate.title || "")}"${!candidate.magnet && !candidate.url ? " disabled" : ""}>下载</button>
+            <div class="candidate-actions">
+              <button type="button" class="button toggle-details" data-target="${detailId}" aria-expanded="false">展开详情</button>
+              <button type="button" class="button download-button" data-url="${escapeAttr(candidate.magnet || candidate.url || "")}" data-title="${escapeAttr(candidate.title || "")}"${!candidate.magnet && !candidate.url ? " disabled" : ""}>单独下载</button>
+            </div>
+          </div>
+          <div class="candidate-summary">
+            <span><strong>评分：</strong>${formatValue(candidate.score)}</span>
+            <span><strong>来源：</strong>${escapeHtml(candidate.source || "-")}</span>
+            <span><strong>发布时间：</strong>${escapeHtml(formatDate(candidate.published_at))}</span>
+            <span><strong>季度：</strong>${formatSeason(parsed.season)}</span>
+            <span><strong>集数：</strong>${escapeHtml(formatValue(parsed.episode))}</span>
+            <span><strong>分辨率：</strong>${escapeHtml(formatValue(parsed.resolution))}</span>
+            <span><strong>字幕组：</strong>${escapeHtml(formatValue(parsed.group))}</span>
+            <span><strong>字幕类型：</strong>${escapeHtml(formatSubtitleType(parsed.subtitle_type))}</span>
+            <span><strong>合集：</strong>${boolOrUnknown(parsed.is_batch)}</span>
+            <span><strong>RAW：</strong>${boolOrUnknown(parsed.is_raw)}</span>
+            <span><strong>Magnet：</strong>${candidate.magnet ? "有" : "无"}</span>
           </div>
           <div id="${detailId}" class="candidate-details hidden">
             <div class="section-label">命中证据</div>
@@ -352,6 +364,17 @@ function renderResults(candidates) {
       `;
     })
     .join("");
+
+  const bar = document.getElementById("add-to-cart-bar");
+  if (bar) {
+    const button = document.getElementById("add-to-cart-button");
+    if (button) {
+      button.addEventListener("click", () => void handleAddToCart());
+    }
+  }
+  document.querySelectorAll(".candidate-select").forEach((checkbox) => {
+    checkbox.addEventListener("change", updateAddToCartBar);
+  });
 }
 
 function renderReasons(reasons) {
@@ -550,7 +573,7 @@ async function apiRequest(url, options, timeoutMs = 30000) {
 function setLoading(enabled, text = "正在加载...") {
   elements.loading.textContent = text;
   elements.loading.classList.toggle("hidden", !enabled);
-  elements.resolveButton.disabled = enabled;
+
   elements.searchForm.querySelector("#search-button").disabled = enabled;
 }
 
@@ -601,12 +624,6 @@ function boolLabel(value) {
   return value ? "已启用" : "未启用";
 }
 
-function metadataStatusLabel(value) {
-  if (!value || typeof value.enabled !== "boolean") {
-    return "未知";
-  }
-  return value.enabled ? "启用" : "未启用";
-}
 
 function boolOrUnknown(value) {
   if (value === true) {
@@ -741,5 +758,135 @@ async function handleDownload(button) {
     button.textContent = "失败";
     button.disabled = false;
     console.error("Download failed:", error);
+  }
+}
+
+// ── cart functions ──────────────────────────────────────
+
+function getSelectedCandidates() {
+  const checked = document.querySelectorAll(".candidate-select:checked");
+  return Array.from(checked).map((cb) => {
+    const index = parseInt(cb.getAttribute("data-candidate-index"), 10);
+    return state.allCandidates[index];
+  }).filter(Boolean);
+}
+
+function updateAddToCartBar() {
+  const bar = document.getElementById("add-to-cart-bar");
+  const count = document.getElementById("cart-selection-count");
+  if (!bar || !count) return;
+  const selected = document.querySelectorAll(".candidate-select:checked").length;
+  if (selected > 0) {
+    bar.classList.remove("hidden");
+    count.textContent = `已选 ${selected} 个候选`;
+  } else {
+    bar.classList.add("hidden");
+  }
+}
+
+async function handleAddToCart() {
+  const candidates = getSelectedCandidates();
+  if (!candidates.length) return;
+
+  const animeName = state.lastQuery || "未命名";
+  const firstParsed = candidates[0].parsed || {};
+  const episode = firstParsed.episode || "";
+
+  try {
+    const response = await apiRequest("/api/carts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anime_name: animeName, episode, items: candidates }),
+    });
+    if (response.cart_id) {
+      document.querySelectorAll(".candidate-select:checked").forEach((cb) => { cb.checked = false; });
+      updateAddToCartBar();
+      await loadCarts();
+    }
+  } catch (error) {
+    console.error("Create cart failed:", error);
+    alert(`创建下载队列失败：${error.message}`);
+  }
+}
+
+async function loadCarts() {
+  try {
+    const response = await apiRequest("/api/carts", { method: "GET" });
+    state.carts = response.carts || [];
+    renderCarts();
+  } catch (error) {
+    console.error("Load carts failed:", error);
+  }
+}
+
+function renderCarts() {
+  const carts = state.carts;
+  if (!carts || carts.length === 0) {
+    elements.carts.innerHTML = `<div class="muted">暂无下载任务。搜索后勾选候选，点击"加入下载队列"。</div>`;
+    return;
+  }
+
+  elements.carts.innerHTML = carts
+    .map((cart) => {
+      const statusLabels = { idle: "待启动", probing: "探测中", downloading: "下载中", done: "已完成", exhausted: "已放弃" };
+      const statusLabel = statusLabels[cart.status] || cart.status;
+      const itemCount = (cart.items || []).length;
+      const recentEvents = (cart.events || []).slice(-3);
+      const canStart = cart.status === "idle" || cart.status === "exhausted";
+
+      return `
+        <div class="cart-item">
+          <div class="cart-header">
+            <div>
+              <strong>${escapeHtml(cart.anime_name)}</strong>
+              ${cart.episode ? `<span class="cart-meta"> 第${escapeHtml(cart.episode)}集</span>` : ""}
+              <span class="cart-status status-${cart.status}">${statusLabel}</span>
+              ${cart.active_title ? `<span class="cart-meta"> | 当前：${escapeHtml(cart.active_title)}</span>` : ""}
+            </div>
+            <div>
+              ${canStart ? `<button type="button" class="button button-primary cart-start-button" data-cart-id="${escapeAttr(cart.cart_id)}">开始下载</button>` : ""}
+              <button type="button" class="button button-muted cart-delete-button" data-cart-id="${escapeAttr(cart.cart_id)}">删除</button>
+            </div>
+          </div>
+          <div class="cart-meta">${itemCount} 个候选 | 回退 ${cart.fallback_count}/${cart.max_fallbacks} | 创建于 ${escapeHtml(formatDate(cart.created_at))}</div>
+          ${recentEvents.length ? `
+            <div class="cart-events">
+              <ul>
+                ${recentEvents.map((e) => `<li>${escapeHtml(formatDate(e.timestamp))}：${escapeHtml(e.message)}</li>`).join("")}
+              </ul>
+            </div>
+          ` : ""}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+async function handleStartCart(button) {
+  const cartId = button.getAttribute("data-cart-id");
+  if (!cartId) return;
+  button.disabled = true;
+  button.textContent = "启动中...";
+  try {
+    await apiRequest(`/api/carts/${cartId}/start`, { method: "POST" });
+    await loadCarts();
+  } catch (error) {
+    console.error("Start cart failed:", error);
+    button.disabled = false;
+    button.textContent = "开始下载";
+  }
+}
+
+async function handleDeleteCart(button) {
+  const cartId = button.getAttribute("data-cart-id");
+  if (!cartId) return;
+  const cart = (state.carts || []).find((c) => c.cart_id === cartId);
+  const active = cart && (cart.status === "downloading" || cart.status === "probing");
+  if (!confirm(`确定删除此下载队列？${active ? "qB 中的对应任务也会被删除。" : ""}`)) return;
+  try {
+    await apiRequest(`/api/carts/${cartId}`, { method: "DELETE" });
+    await loadCarts();
+  } catch (error) {
+    console.error("Delete cart failed:", error);
   }
 }

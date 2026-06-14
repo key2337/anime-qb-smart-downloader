@@ -8,10 +8,13 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from aqsd.cart_service import CartService
+from aqsd.cart_store import CartStore
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_search_candidates
 from aqsd.models import Candidate, ExpandedQueryDetail, ScoreBreakdown, SearchDiagnostics, TitleEvidence
 from aqsd.qbittorrent import QBittorrentAddTorrentError, QBittorrentClient
+from aqsd.utils import fix_magnet_name
 
 
 API_DEPENDENCY_ERROR = "API server dependencies are not installed. Please install fastapi and uvicorn."
@@ -40,6 +43,26 @@ class DownloadPayload(BaseModel):
     title: str | None = None
     category: str | None = None
     save_path: str | None = None
+
+
+class CreateCartPayload(BaseModel):
+    anime_name: str
+    episode: str = ""
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AddCartItemsPayload(BaseModel):
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def _build_qb_client(config: AppConfig) -> QBittorrentClient:
+    client = QBittorrentClient(
+        base_url=config.qb.base_url,
+        username=config.qb.username,
+        password=config.qb.password,
+    )
+    client.login()
+    return client
 
 
 def create_api_app(config: AppConfig):
@@ -117,8 +140,9 @@ def create_api_app(config: AppConfig):
             raise http_exception(status_code=502, detail=f"qBittorrent 登录失败：{exc}")
 
         try:
+            fixed_url = fix_magnet_name(url, payload.title)
             client.add_torrent(
-                url=url,
+                url=fixed_url,
                 category=payload.category or config.qb.default_category,
                 save_path=payload.save_path or config.qb.default_save_path,
                 tags="aqsd",
@@ -149,6 +173,52 @@ def create_api_app(config: AppConfig):
 
         return {"torrents": [_serialize_torrent(t) for t in torrents]}
 
+    cart_store = CartStore(Path(config.app.database).parent / "carts.json")
+    cart_service = CartService(cart_store, lambda: _build_qb_client(config))
+
+    @app.post("/api/carts")
+    def create_cart(payload: CreateCartPayload) -> dict[str, Any]:
+        if not payload.anime_name.strip():
+            raise http_exception(status_code=400, detail="anime_name must not be empty")
+        if not payload.items:
+            raise http_exception(status_code=400, detail="items must not be empty")
+        cart = cart_service.create_cart(payload.anime_name.strip(), payload.episode.strip(), payload.items)
+        return serialize_cart(cart)
+
+    @app.get("/api/carts")
+    def list_carts() -> dict[str, Any]:
+        carts = cart_service.list_carts()
+        return {"carts": [serialize_cart(c) for c in carts]}
+
+    @app.get("/api/carts/{cart_id}")
+    def get_cart(cart_id: str) -> dict[str, Any]:
+        cart = cart_service.get_cart(cart_id)
+        if cart is None:
+            raise http_exception(status_code=404, detail="cart not found")
+        return serialize_cart(cart)
+
+    @app.post("/api/carts/{cart_id}/items")
+    def add_cart_items(cart_id: str, payload: AddCartItemsPayload) -> dict[str, Any]:
+        cart = cart_service.add_items(cart_id, payload.items)
+        if cart is None:
+            raise http_exception(status_code=404, detail="cart not found")
+        return serialize_cart(cart)
+
+    @app.post("/api/carts/{cart_id}/start")
+    def start_cart(cart_id: str) -> dict[str, Any]:
+        cart = cart_service.start_cart(cart_id)
+        if cart is None:
+            raise http_exception(status_code=400, detail="cart cannot be started")
+        return serialize_cart(cart)
+
+    @app.delete("/api/carts/{cart_id}")
+    def delete_cart(cart_id: str) -> dict[str, Any]:
+        ok = cart_service.delete_cart(cart_id)
+        if not ok:
+            raise http_exception(status_code=404, detail="cart not found")
+        return {"ok": True}
+
+    app.state.cart_service = cart_service
     return app
 
 
@@ -161,6 +231,13 @@ def run_server_command(config: AppConfig, *, host: str = DEFAULT_API_HOST, port:
         return 1
 
     app = create_api_app(config)
+    try:
+        cart_service = getattr(app.state, "cart_service", None)
+        if cart_service is not None and config.qb.base_url.strip():
+            cart_service.start_monitor()
+            print("Cart monitor started")
+    except Exception:
+        pass
     print(f"Starting aqsd API server at http://{host}:{port}")
     uvicorn.run(app, host=host, port=port)
     return 0
@@ -189,6 +266,7 @@ def serialize_candidate(candidate: Candidate, rank: int) -> dict[str, Any]:
         "published_at": _serialize_datetime(candidate.published_at),
         "magnet": candidate.magnet or None,
         "url": candidate.url or None,
+        "info_hash": candidate.info_hash,
         "parsed": {
             "episode": candidate.episode,
             "season": candidate.season,
@@ -265,6 +343,23 @@ def serialize_title_evidence(evidence: TitleEvidence | None) -> dict[str, Any] |
     if evidence is None:
         return None
     return asdict(evidence)
+
+
+def serialize_cart(cart: Any) -> dict[str, Any]:
+    return {
+        "cart_id": cart.cart_id,
+        "anime_name": cart.anime_name,
+        "episode": cart.episode,
+        "items": [asdict(item) for item in cart.items],
+        "tried_hashes": list(cart.tried_hashes),
+        "active_hash": cart.active_hash,
+        "active_title": cart.active_title,
+        "fallback_count": cart.fallback_count,
+        "max_fallbacks": cart.max_fallbacks,
+        "status": cart.status,
+        "events": [asdict(event) for event in cart.events],
+        "created_at": cart.created_at,
+    }
 
 
 def _validate_qb_configured(config: AppConfig, http_exception: Any) -> None:

@@ -60,3 +60,18 @@ def build_task_tag(anime_name: str, episode: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", normalize_text(anime_name)).strip("-")
     suffix = uuid.uuid4().hex[:8]
     return f"aqsd-{normalized or 'anime'}-{episode}-{suffix}"
+
+
+def fix_magnet_name(url: str, title: str | None) -> str:
+    """Inject display name into magnet URI when dn parameter is missing or empty."""
+    if not url.casefold().startswith("magnet:"):
+        return url
+    if not title:
+        return url
+    from urllib.parse import quote
+
+    if "dn=" in url:
+        url = re.sub(r"dn=[^&]*", f"dn={quote(title)}", url)
+    else:
+        url = re.sub(r"magnet:\?(?=xt)", f"magnet:?dn={quote(title)}&", url)
+    return url

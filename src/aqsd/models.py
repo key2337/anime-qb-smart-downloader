@@ -122,6 +122,47 @@ class AnimeRule:
 
 
 @dataclass(slots=True)
+class CartItem:
+    title: str
+    magnet: str | None = None
+    url: str = ""
+    source: str = ""
+    seeders: int = 0
+    score: float = 0.0
+    info_hash: str | None = None
+    group: str | None = None
+    resolution: str | None = None
+    subtitle_type: str | None = None
+    is_batch: bool = False
+    is_raw: bool = False
+    episode: str | None = None
+    season: int | None = None
+
+
+@dataclass(slots=True)
+class CartEvent:
+    timestamp: str
+    type: str
+    message: str
+
+
+@dataclass(slots=True)
+class Cart:
+    cart_id: str = ""
+    anime_name: str = ""
+    episode: str = ""
+    items: list[CartItem] = field(default_factory=list)
+    tried_hashes: list[str] = field(default_factory=list)
+    active_hash: str | None = None
+    active_title: str | None = None
+    fallback_count: int = 0
+    max_fallbacks: int = 3
+    status: str = "idle"
+    events: list[CartEvent] = field(default_factory=list)
+    created_at: str = ""
+
+
+@dataclass(slots=True)
 class DownloadTask:
     task_tag: str
     anime_name: str

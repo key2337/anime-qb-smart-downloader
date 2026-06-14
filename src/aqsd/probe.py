@@ -9,7 +9,7 @@ from loguru import logger
 from aqsd.config import ProbePolicy
 from aqsd.models import Candidate
 from aqsd.qbittorrent import QBittorrentClient
-from aqsd.utils import build_task_tag
+from aqsd.utils import build_task_tag, fix_magnet_name
 
 
 class SleepFn(Protocol):
@@ -45,8 +45,9 @@ def probe_candidates(
     for candidate in candidates[: policy.max_candidates]:
         tag = build_task_tag(candidate.anime_name or "probe", candidate.episode or "00")
         try:
+            download_url = fix_magnet_name(candidate.magnet or candidate.url, candidate.title)
             qb.add_torrent(
-                candidate.url,
+                download_url,
                 category=candidate.category,
                 save_path=candidate.save_path,
                 tags=tag,

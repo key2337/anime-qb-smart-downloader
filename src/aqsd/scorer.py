@@ -7,14 +7,14 @@ from aqsd.models import AnimeRule, Candidate, ExpandedQueryDetail, ScoreBreakdow
 from aqsd.utils import contains_search_keyword, normalize_text
 
 
-GROUP_PREFERENCE_BASE = 240.0
-GROUP_PREFERENCE_STEP = 60.0
-NON_PREFERRED_GROUP_PENALTY = -70.0
-UNKNOWN_GROUP_PENALTY = -90.0
-MAX_SEEDER_SCORE = 100.0
-MAX_FRESHNESS_SCORE = 140.0
+GROUP_PREFERENCE_BASE = 80.0
+GROUP_PREFERENCE_STEP = 20.0
+NON_PREFERRED_GROUP_PENALTY = -10.0
+UNKNOWN_GROUP_PENALTY = -15.0
+MAX_SEEDER_SCORE = 150.0
+MAX_FRESHNESS_SCORE = 80.0
 FRESHNESS_WINDOW_HOURS = 24 * 45
-LATEST_EPISODE_BONUS = 180.0
+LATEST_EPISODE_BONUS = 60.0
 
 
 def _utc_now() -> datetime:
@@ -290,7 +290,7 @@ def explain_score_candidate(
         _add_reason(breakdown, "revision_bonus", 10.0, "revision bonus: v2/v3")
 
     if candidate.is_batch:
-        _add_reason(breakdown, "batch_penalty", -120.0, "batch penalty")
+        _add_reason(breakdown, "batch_penalty", -30.0, "batch penalty")
     else:
         _add_reason(breakdown, "single_release_bonus", 6.0, "single release")
 

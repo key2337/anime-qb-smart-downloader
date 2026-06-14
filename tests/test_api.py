@@ -53,7 +53,7 @@ class ApiTests(unittest.TestCase):
         response = client.get("/app.js")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("解析标题", response.text)
+        self.assertIn("handleSearch", response.text)
         self.assertIn("展开详情", response.text)
 
     def test_style_css_can_be_accessed(self) -> None:
