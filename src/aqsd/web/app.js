@@ -35,10 +35,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   elements.results.addEventListener("click", (event) => {
     const button = event.target.closest(".toggle-details");
-    if (!button) {
+    if (button) {
+      toggleCandidateDetails(button);
       return;
     }
-    toggleCandidateDetails(button);
+    const downloadBtn = event.target.closest(".download-button");
+    if (downloadBtn) {
+      void handleDownload(downloadBtn);
+    }
   });
 });
 
@@ -311,6 +315,7 @@ function renderResults(candidates) {
               </div>
             </div>
             <button type="button" class="button toggle-details" data-target="${detailId}" aria-expanded="false">展开详情</button>
+            <button type="button" class="button download-button" data-url="${escapeAttr(candidate.magnet || candidate.url || "")}" data-title="${escapeAttr(candidate.title || "")}"${!candidate.magnet && !candidate.url ? " disabled" : ""}>下载</button>
           </div>
           <div id="${detailId}" class="candidate-details hidden">
             <div class="section-label">命中证据</div>
@@ -705,4 +710,36 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function escapeAttr(value) {
+  return String(value).replaceAll('"', "&quot;").replaceAll("&", "&amp;");
+}
+
+async function handleDownload(button) {
+  const url = button.getAttribute("data-url");
+  const title = button.getAttribute("data-title");
+  if (!url) return;
+
+  button.disabled = true;
+  button.textContent = "添加中...";
+
+  try {
+    const response = await apiRequest("/api/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, title }),
+    });
+    if (response.ok) {
+      button.textContent = "已添加";
+      button.classList.add("button-downloaded");
+    } else {
+      button.textContent = "失败";
+      button.disabled = false;
+    }
+  } catch (error) {
+    button.textContent = "失败";
+    button.disabled = false;
+    console.error("Download failed:", error);
+  }
 }

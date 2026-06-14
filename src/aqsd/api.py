@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from aqsd.config import AppConfig
 from aqsd.discovery import SearchRequest, discover_search_candidates
 from aqsd.models import Candidate, ExpandedQueryDetail, ScoreBreakdown, SearchDiagnostics, TitleEvidence
-from aqsd.qbittorrent import QBittorrentClient
+from aqsd.qbittorrent import QBittorrentAddTorrentError, QBittorrentClient
 
 
 API_DEPENDENCY_ERROR = "API server dependencies are not installed. Please install fastapi and uvicorn."
@@ -33,6 +33,13 @@ class SearchPayload(BaseModel):
     batch_only: bool = False
     release_mode: str = Field(default="any", pattern="^(any|episode|batch)$")
     limit: int = 20
+
+
+class DownloadPayload(BaseModel):
+    url: str
+    title: str | None = None
+    category: str | None = None
+    save_path: str | None = None
 
 
 def create_api_app(config: AppConfig):
@@ -90,6 +97,57 @@ def create_api_app(config: AppConfig):
             "candidates": [serialize_candidate(candidate, rank=index) for index, candidate in enumerate(result.candidates, start=1)],
             "diagnostics": diagnostics,
         }
+
+    @app.post("/api/download")
+    def download(payload: DownloadPayload) -> dict[str, Any]:
+        url = payload.url.strip()
+        if not url:
+            raise http_exception(status_code=400, detail="url must not be empty")
+
+        _validate_qb_configured(config, http_exception)
+
+        client = QBittorrentClient(
+            base_url=config.qb.base_url,
+            username=config.qb.username,
+            password=config.qb.password,
+        )
+        try:
+            client.login()
+        except Exception as exc:
+            raise http_exception(status_code=502, detail=f"qBittorrent 登录失败：{exc}")
+
+        try:
+            client.add_torrent(
+                url=url,
+                category=payload.category or config.qb.default_category,
+                save_path=payload.save_path or config.qb.default_save_path,
+                tags="aqsd",
+            )
+        except QBittorrentAddTorrentError as exc:
+            raise http_exception(status_code=502, detail=str(exc))
+
+        return {"ok": True, "title": payload.title}
+
+    @app.get("/api/downloads")
+    def downloads() -> dict[str, Any]:
+        _validate_qb_configured(config, http_exception)
+
+        client = QBittorrentClient(
+            base_url=config.qb.base_url,
+            username=config.qb.username,
+            password=config.qb.password,
+        )
+        try:
+            client.login()
+        except Exception as exc:
+            raise http_exception(status_code=502, detail=f"qBittorrent 登录失败：{exc}")
+
+        try:
+            torrents = client.list_torrents()
+        except Exception as exc:
+            raise http_exception(status_code=502, detail=f"获取下载列表失败：{exc}")
+
+        return {"torrents": [_serialize_torrent(t) for t in torrents]}
 
     return app
 
@@ -208,6 +266,28 @@ def serialize_title_evidence(evidence: TitleEvidence | None) -> dict[str, Any] |
     if evidence is None:
         return None
     return asdict(evidence)
+
+
+def _validate_qb_configured(config: AppConfig, http_exception: Any) -> None:
+    if not config.qb.base_url.strip():
+        raise http_exception(status_code=503, detail="qBittorrent 未配置，请先设置 base_url。")
+
+
+def _serialize_torrent(torrent: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "hash": torrent.get("hash", ""),
+        "name": torrent.get("name", ""),
+        "size": torrent.get("size"),
+        "progress": torrent.get("progress"),
+        "state": torrent.get("state"),
+        "dlspeed": torrent.get("dlspeed"),
+        "eta": torrent.get("eta"),
+        "category": torrent.get("category"),
+        "tags": torrent.get("tags", ""),
+        "added_on": torrent.get("added_on"),
+        "completion_on": torrent.get("completion_on"),
+        "save_path": torrent.get("save_path"),
+    }
 
 
 def _probe_qb_status(config: AppConfig) -> dict[str, Any]:
