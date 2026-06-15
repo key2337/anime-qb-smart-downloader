@@ -7,7 +7,7 @@ from aqsd.database import Database
 from aqsd.discovery import discover_rule_candidates, group_candidates_by_episode
 from aqsd.models import Candidate, DownloadTask
 from aqsd.qbittorrent import QBittorrentClient
-from aqsd.utils import build_task_tag
+from aqsd.utils import build_task_tag, fix_magnet_name
 
 
 def collect_candidates(config: AppConfig, db: Database) -> dict[tuple[str, str], list[Candidate]]:
@@ -26,9 +26,10 @@ def add_best_candidates(qb: QBittorrentClient, db: Database, candidate_pool: dic
         best = ranked_candidates[0]
         best.task_tag = build_task_tag(best.anime_name or "anime", best.episode or "00")
 
+        download_url = fix_magnet_name(best.magnet or best.url, best.title)
         logger.info("Adding torrent: {} score={}", best.title, best.score)
         qb.add_torrent(
-            best.url,
+            download_url,
             category=best.category,
             save_path=best.save_path,
             tags=best.task_tag,

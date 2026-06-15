@@ -113,8 +113,8 @@
       <div class="modal-content">
         <h3>添加追番</h3>
         <label><span>名称</span><input id="sub-name" type="text" placeholder="番剧名称"></label>
-        <label><span>RSS 源</span><input id="sub-source" type="text" placeholder="例如 mikan-agg（留空用默认）"></label>
-        <label><span>匹配规则</span><input id="sub-match" type="text" placeholder="anime 规则名（留空用名称）"></label>
+        <label><span>RSS 源</span><select id="sub-source"><option value="">默认（第一个启用的源）</option></select></label>
+        <label><span>匹配规则</span><select id="sub-match"><option value="">使用番剧名称匹配</option></select></label>
         <label><span>集数偏移</span><input id="sub-offset" type="number" value="0"></label>
         <div class="toolbar">
           <button id="sub-save-button" class="button button-primary">保存</button>
@@ -125,6 +125,6 @@
     </div>
   </main>
 
-  <script src="/app.js?v=9"></script>
+  <script src="/app.js?v=10"></script>
 </body>
 </html>

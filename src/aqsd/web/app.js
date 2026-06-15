@@ -261,11 +261,15 @@ function renderHealth(payload) {
   const sources = payload.sources || {};
   const qbLabel = qb.reachable ? "可连接" : "不可连接";
   const qbError = qb.error ? `（${escapeHtml(qb.error)}）` : "";
+  const subCount = payload.subscriptions != null ? payload.subscriptions : "?";
+  const cartCount = payload.carts != null ? payload.carts : "?";
 
   elements.health.innerHTML = `
     <div><strong>qBittorrent：</strong>${qbLabel}${qbError}</div>
     <ul class="status-list">
       <li>RSS：${boolLabel(sources.rss)}</li>
+      <li>追番订阅：${subCount} 个</li>
+      <li>下载队列：${cartCount} 个</li>
     </ul>
   `;
 }
@@ -308,8 +312,13 @@ function renderResults(candidates) {
   }
 
   const toolbar = `
+    <div class="toolbar" style="margin-bottom:8px;">
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+        <input type="checkbox" id="select-all-checkbox"> 全选/取消全选
+      </label>
+    </div>
     <div class="add-to-cart-bar hidden" id="add-to-cart-bar">
-      <button type="button" class="button button-primary" id="add-to-cart-button">加入下载队列</button>
+      <button type="button" class="button button-primary" id="add-to-cart-button">加入下载队列并开始下载</button>
       <span class="muted" id="cart-selection-count"></span>
     </div>
   `;
@@ -386,6 +395,15 @@ function renderResults(candidates) {
     if (button) {
       button.addEventListener("click", () => void handleAddToCart());
     }
+  }
+  const selectAll = document.getElementById("select-all-checkbox");
+  if (selectAll) {
+    selectAll.addEventListener("change", () => {
+      document.querySelectorAll(".candidate-select").forEach((cb) => {
+        cb.checked = selectAll.checked;
+      });
+      updateAddToCartBar();
+    });
   }
   document.querySelectorAll(".candidate-select").forEach((checkbox) => {
     checkbox.addEventListener("change", updateAddToCartBar);
@@ -816,6 +834,12 @@ async function handleAddToCart() {
     if (response.cart_id) {
       document.querySelectorAll(".candidate-select:checked").forEach((cb) => { cb.checked = false; });
       updateAddToCartBar();
+      selectAllCheckbox = document.getElementById("select-all-checkbox");
+      if (selectAllCheckbox) selectAllCheckbox.checked = false;
+      // Auto-start the cart
+      try {
+        await apiRequest(`/api/carts/${response.cart_id}/start`, { method: "POST" });
+      } catch (e) { /* start failed, user can manually start */ }
       await loadCarts();
     }
   } catch (error) {
@@ -932,12 +956,15 @@ function renderSubscriptions(subs) {
   el.innerHTML = subs.map((s) => {
     const lastCheck = s.last_check_at ? formatDate(s.last_check_at) : "从未";
     const lastEp = s.last_episode || "-";
+    const sourceInfo = s.source_name ? `源: ${escapeHtml(s.source_name)}` : "";
+    const matchInfo = s.match_name ? `规则: ${escapeHtml(s.match_name)}` : "";
+    const metaInfo = [sourceInfo, matchInfo].filter(Boolean).join(" | ");
     return `
       <div class="cart-item">
         <div class="cart-header">
           <div>
             <strong>${escapeHtml(s.name)}</strong>
-            <span class="cart-meta"> | 上次：${lastCheck} | 最新：${lastEp}</span>
+            <span class="cart-meta"> | ${metaInfo} | 上次检查：${lastCheck} | 最新集：${lastEp}</span>
             ${s.enabled ? "" : `<span class="cart-status status-exhausted">已停用</span>`}
           </div>
           <div>
@@ -948,6 +975,20 @@ function renderSubscriptions(subs) {
       </div>
     `;
   }).join("");
+}
+
+function eventTypeLabel(type) {
+  const map = {
+    cart_created: "创建下载队列",
+    check_done: "检查完成",
+    check_error: "检查出错",
+    probe_start: "开始探测",
+    done: "下载完成",
+    fallback: "死种回退",
+    fallback_failed: "回退失败",
+    exhausted: "资源耗尽",
+  };
+  return map[type] || type;
 }
 
 function renderSubscriptionEvents(events) {
@@ -961,19 +1002,31 @@ function renderSubscriptionEvents(events) {
     <div class="section-label" style="margin-top:16px;">最近事件</div>
     <ul class="kv-list">
       ${recent.map((e) => `
-        <li>${escapeHtml(formatDate(e.created_at))} [${escapeHtml(e.subscription_name || "")}] ${escapeHtml(e.event_type)}：${escapeHtml(e.details || "")} ${e.episode ? `第${escapeHtml(e.episode)}集` : ""}</li>
+        <li>${escapeHtml(formatDate(e.created_at))} [${escapeHtml(e.subscription_name || "")}] ${eventTypeLabel(e.event_type)}：${escapeHtml(e.details || "")} ${e.episode ? `第${escapeHtml(e.episode)}集` : ""}</li>
       `).join("")}
     </ul>
   `;
 }
 
-function showSubModal() {
+async function showSubModal() {
   document.getElementById("sub-modal").classList.remove("hidden");
   document.getElementById("sub-name").value = "";
   document.getElementById("sub-source").value = "";
   document.getElementById("sub-match").value = "";
   document.getElementById("sub-offset").value = "0";
   document.getElementById("sub-modal-error").classList.add("hidden");
+  // Load available sources and rules for dropdowns
+  try {
+    const cfg = await apiRequest("/api/config", { method: "GET" });
+    const srcEl = document.getElementById("sub-source");
+    srcEl.innerHTML = '<option value="">默认（第一个启用的源）</option>' +
+      (cfg.rss_sources || []).map(s => `<option value="${escapeAttr(s.name)}">${escapeHtml(s.name)} ${s.enabled ? "" : "(已禁用)"}</option>`).join("");
+    const matchEl = document.getElementById("sub-match");
+    matchEl.innerHTML = '<option value="">使用番剧名称匹配</option>' +
+      (cfg.anime_rules || []).map(r => `<option value="${escapeAttr(r.name)}">${escapeHtml(r.name)}</option>`).join("");
+  } catch (e) {
+    // keep text inputs as fallback
+  }
 }
 
 function hideSubModal() {

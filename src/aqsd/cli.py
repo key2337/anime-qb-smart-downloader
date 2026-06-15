@@ -14,7 +14,7 @@ from aqsd.models import Candidate, DownloadTask, SearchDiagnostics
 from aqsd.probe import probe_candidates
 from aqsd.qbittorrent import QBittorrentClient
 from aqsd.scorer import render_score_reason
-from aqsd.utils import build_task_tag
+from aqsd.utils import build_task_tag, fix_magnet_name
 
 
 MAX_REASON_CANDIDATES = 5
@@ -78,8 +78,9 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
         _print_candidate_breakdown(stream, best, heading="Selected candidate")
 
         if not already_submitted:
+            download_url = fix_magnet_name(best.magnet or best.url, best.title)
             qb.add_torrent(
-                best.url,
+                download_url,
                 category=best.category,
                 save_path=best.save_path,
                 tags=best.task_tag,
@@ -90,7 +91,7 @@ def run_download_command(args: argparse.Namespace, config: AppConfig, out: TextI
                 anime_name=best.anime_name or request.query,
                 episode=best.episode or "00",
                 title=best.title,
-                url=best.url,
+                url=best.magnet or best.url,
                 selection_mode="manual",
                 candidate_score=best.score,
                 source=best.source,

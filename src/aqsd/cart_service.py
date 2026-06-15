@@ -18,6 +18,7 @@ PROBE_DURATION_SECONDS = 180
 PROBE_MIN_SPEED_KBPS = 10
 DEAD_CHECK_AFTER_MINUTES = 30
 MONITOR_INTERVAL_SECONDS = 60
+METADL_TIMEOUT_MINUTES = 10
 
 
 def _now_iso() -> str:
@@ -114,6 +115,21 @@ class CartService:
 
     # ── probe & start ──────────────────────────────────────
 
+    def recover_probing_carts(self) -> int:
+        """Reset probing carts to idle and re-start them after a restart."""
+        count = 0
+        for cart in self._store.list_by_status("probing"):
+            cart.status = "idle"
+            cart.events.append(CartEvent(
+                timestamp=_now_iso(),
+                type="recover",
+                message="服务重启，恢复购物车",
+            ))
+            self._store.save(cart)
+            self.start_cart(cart.cart_id)
+            count += 1
+        return count
+
     def start_cart(self, cart_id: str) -> Cart | None:
         cart = self._store.get(cart_id)
         if cart is None or cart.status not in ("idle", "exhausted"):
@@ -154,26 +170,38 @@ class CartService:
                 self._store.save(cart)
                 return
 
-            # Pause active torrents to free download slots for probe
-            paused_hashes = _pause_active_torrents(qb)
-
             attempts: dict[str, CartItem] = {}
             try:
                 for item in remaining:
+                    if not item.info_hash:
+                        continue
                     download_url = fix_magnet_name(item.magnet or item.url, item.title)
                     try:
-                        qb.add_torrent(download_url)
-                        if item.info_hash:
-                            attempts[item.info_hash.casefold()] = item
+                        qb.add_torrent(download_url, paused=True)
+                        attempts[item.info_hash.casefold()] = item
                     except Exception as exc:
                         logger.warning("Probe add failed for {}: {}", item.title, exc)
+
+                # Resume probe torrents in one batch to avoid queue blocking
+                if attempts:
+                    time.sleep(2)  # let qB process the additions
+                    by_hash = _build_qb_torrent_map(qb)
+                    probe_hashes = [
+                        t["hash"] for h, t in by_hash.items()
+                        if h in attempts
+                    ]
+                    if probe_hashes:
+                        try:
+                            qb.resume_torrents("|".join(probe_hashes))
+                        except Exception as exc:
+                            logger.warning("Probe batch resume failed: {}", exc)
 
                 if not attempts:
                     cart.status = "idle"
                     cart.events.append(CartEvent(
                         timestamp=_now_iso(),
                         type="probe_end",
-                        message="probe 失败：无法添加任何候选到 qB",
+                        message="probe 失败：无可用 info_hash 候选",
                     ))
                     self._store.save(cart)
                     return
@@ -236,8 +264,17 @@ class CartService:
                 ))
                 self._store.save(cart)
                 logger.info("Cart {} probe complete: selected {}", cart_id, selected.title)
-            finally:
-                _resume_torrents(qb, paused_hashes)
+            except Exception:
+                logger.exception("Probe for cart {} crashed", cart_id)
+                cart = self._store.get(cart_id)
+                if cart and cart.status == "probing":
+                    cart.status = "idle"
+                    cart.events.append(CartEvent(
+                        timestamp=_now_iso(),
+                        type="probe_end",
+                        message="probe 异常退出，回退到 idle",
+                    ))
+                    self._store.save(cart)
 
     @staticmethod
     def _probe_score(torrent: dict) -> float:
@@ -303,6 +340,7 @@ class CartService:
                         anime_name=cart.anime_name,
                         episode=cart.episode,
                         url="",
+                        source="",
                     ))
                     logger.info("Marked {}/{} as downloaded", cart.anime_name, cart.episode)
                 continue
@@ -315,9 +353,14 @@ class CartService:
         if state in ("error", "missingfiles"):
             return True
 
-        progress = float(torrent.get("progress", 0) or 0)
         added_on = int(torrent.get("added_on", 0) or 0)
         minutes_since_add = (time.time() - added_on) / 60 if added_on else 0
+
+        # Magnet stuck in metadata download — DHT unreachable
+        if state == "metadl" and minutes_since_add >= METADL_TIMEOUT_MINUTES:
+            return True
+
+        progress = float(torrent.get("progress", 0) or 0)
 
         if progress < 0.001 and minutes_since_add >= DEAD_CHECK_AFTER_MINUTES:
             return True
@@ -385,35 +428,6 @@ class CartService:
         if not hash_value:
             return None
         return hash_value.strip().casefold()
-
-
-def _pause_active_torrents(qb: QBittorrentClient) -> list[str]:
-    """Pause all downloading or queued torrents to free slots for probe. Returns paused hashes."""
-    active_states = ("downloading", "queueddl", "queuedup", "stalleddl", "stalledup", "forcedl", "forceup")
-    paused: list[str] = []
-    try:
-        for torrent in qb.list_torrents():
-            state = (torrent.get("state") or "").casefold()
-            if state in active_states:
-                h = torrent.get("hash")
-                if h:
-                    paused.append(h)
-        if paused:
-            qb.pause_torrents("|".join(paused))
-            logger.info("Probe: paused {} active torrents", len(paused))
-    except Exception as exc:
-        logger.warning("Probe: failed to pause torrents: {}", exc)
-    return paused
-
-
-def _resume_torrents(qb: QBittorrentClient, hashes: list[str]) -> None:
-    if not hashes:
-        return
-    try:
-        qb.resume_torrents("|".join(hashes))
-        logger.info("Probe: resumed {} torrents", len(hashes))
-    except Exception as exc:
-        logger.warning("Probe: failed to resume torrents: {}", exc)
 
 
 def _build_qb_torrent_map(qb: QBittorrentClient) -> dict[str, dict]:

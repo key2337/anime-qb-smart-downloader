@@ -79,6 +79,13 @@ def create_api_app(config: AppConfig):
 
     app = fastapi.FastAPI(title="aqsd API", version="0.1.0")
 
+    # Shared state created early so endpoints can reference them
+    db_path = Path(config.app.database).parent / "app.db"
+    db = Database(str(db_path))
+    cart_store = CartStore(Path(config.app.database).parent / "carts.json")
+    cart_service = CartService(cart_store, lambda: _build_qb_client(config), db=db)
+    subscription_manager = SubscriptionManager(config, db, cart_service)
+
     @app.get("/")
     def index():
         return _web_file_response("index.html", media_type="text/html; charset=utf-8", file_response=file_response, http_exception=http_exception)
@@ -97,7 +104,24 @@ def create_api_app(config: AppConfig):
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        return build_health_payload(config)
+        payload = build_health_payload(config)
+        try:
+            payload["subscriptions"] = len(db.list_subscriptions())
+        except Exception:
+            payload["subscriptions"] = 0
+        try:
+            payload["carts"] = len(cart_service.list_carts())
+        except Exception:
+            payload["carts"] = 0
+        return payload
+
+    @app.get("/api/config")
+    def get_config() -> dict[str, Any]:
+        return {
+            "rss_sources": [{"name": s.name, "url": s.url, "enabled": s.enabled} for s in config.rss_sources],
+            "anime_rules": [{"name": r.name, "aliases": r.aliases} for r in config.anime_rules],
+            "profiles": list(config.profiles.keys()),
+        }
 
     @app.post("/api/search")
     def search(payload: SearchPayload) -> dict[str, Any]:
@@ -182,11 +206,6 @@ def create_api_app(config: AppConfig):
 
         return {"torrents": [_serialize_torrent(t) for t in torrents]}
 
-    db_path = Path(config.app.database).parent / "app.db"
-    db = Database(str(db_path))
-    cart_store = CartStore(Path(config.app.database).parent / "carts.json")
-    cart_service = CartService(cart_store, lambda: _build_qb_client(config), db=db)
-
     @app.post("/api/carts")
     def create_cart(payload: CreateCartPayload) -> dict[str, Any]:
         if not payload.anime_name.strip():
@@ -230,8 +249,6 @@ def create_api_app(config: AppConfig):
         return {"ok": True}
 
     # ── subscriptions ────────────────────────────────────
-
-    subscription_manager = SubscriptionManager(config, db, cart_service)
 
     @app.get("/api/subscriptions")
     def list_subscriptions() -> dict[str, Any]:
@@ -317,6 +334,10 @@ def run_server_command(config: AppConfig, *, host: str = DEFAULT_API_HOST, port:
         if cart_service is not None and config.qb.base_url.strip():
             cart_service.start_monitor()
             print("Cart monitor started")
+            # Recover probing carts that were interrupted by shutdown
+            recovered = cart_service.recover_probing_carts()
+            if recovered:
+                print(f"Recovered {recovered} probing cart(s) from previous session")
     except Exception:
         pass
     try:

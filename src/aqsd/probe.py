@@ -51,6 +51,7 @@ def probe_candidates(
                 category=candidate.category,
                 save_path=candidate.save_path,
                 tags=tag,
+                paused=True,
             )
         except Exception as exc:
             logger.warning("Probe add failed for {}: {}", candidate.title, exc)
@@ -59,6 +60,20 @@ def probe_candidates(
 
     if not attempts:
         return ProbeResult(selected=None, selected_tag=None, attempts=[], scores={})
+
+    # Batch resume probe torrents to avoid metaDL queue blocking
+    time.sleep(2)
+    by_tag = _list_torrents_by_tag(qb)
+    probe_hashes: list[str] = []
+    for attempt in attempts:
+        t = by_tag.get(attempt.tag)
+        if t and t.get("hash"):
+            probe_hashes.append(t["hash"])
+    if probe_hashes:
+        try:
+            qb.resume_torrents("|".join(probe_hashes))
+        except Exception as exc:
+            logger.warning("Probe batch resume failed: {}", exc)
 
     _capture_initial_progress(qb, attempts)
     sleep_fn(policy.duration_seconds)

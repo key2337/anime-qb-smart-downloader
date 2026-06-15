@@ -21,10 +21,11 @@ class FakeQBittorrentClient:
         category: str | None = None,
         save_path: str | None = None,
         tags: str | None = None,
+        paused: bool = False,
     ) -> None:
         if self.fail_add:
             raise RuntimeError("add failed")
-        self.added.append({"url": url, "category": category, "save_path": save_path, "tags": tags})
+        self.added.append({"url": url, "category": category, "save_path": save_path, "tags": tags, "paused": paused})
 
     def list_torrents(self) -> list[dict]:
         self.list_calls += 1
@@ -48,6 +49,12 @@ class FakeQBittorrentClient:
 
     def delete_torrent(self, torrent_hash: str, delete_files: bool = False) -> None:
         self.deleted.append({"hash": torrent_hash, "delete_files": delete_files})
+
+    def pause_torrents(self, hashes: str) -> None:
+        pass
+
+    def resume_torrents(self, hashes: str) -> None:
+        pass
 
 
 def _candidate(title: str, url: str, *, score: float = 100.0, seeders: int = 0) -> Candidate:

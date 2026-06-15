@@ -372,7 +372,7 @@ class Database:
                     candidate.anime_name or "unknown",
                     candidate.episode or "00",
                     candidate.title,
-                    candidate.url,
+                    candidate.magnet or candidate.url,
                     candidate.score,
                     candidate.source,
                     next_rank,

@@ -9,7 +9,7 @@ from aqsd.config import AppConfig
 from aqsd.database import Database
 from aqsd.models import DownloadTask
 from aqsd.qbittorrent import QBittorrentClient
-from aqsd.utils import build_task_tag
+from aqsd.utils import build_task_tag, fix_magnet_name
 
 
 @dataclass(slots=True)
@@ -127,8 +127,9 @@ class DownloadMonitor:
             return
 
         try:
+            download_url = fix_magnet_name(candidate_url, fallback["candidate_title"])
             self.qb.add_torrent(
-                candidate_url,
+                download_url,
                 category=task["category"],
                 save_path=task["save_path"],
                 tags=next_task_tag,
