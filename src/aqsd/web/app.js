@@ -29,6 +29,7 @@ const elements = {
 document.addEventListener("DOMContentLoaded", () => {
   void loadHealth();
   void loadCarts();
+  void loadSubscriptions();
 
   elements.searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -57,7 +58,21 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
   });
+
+  // subscriptions
+  document.getElementById("sub-add-button").addEventListener("click", () => showSubModal());
+  document.getElementById("sub-check-all-button").addEventListener("click", () => void handleCheckAll());
+  document.getElementById("sub-save-button").addEventListener("click", () => void handleAddSubscription());
+  document.getElementById("sub-cancel-button").addEventListener("click", hideSubModal);
+  document.getElementById("subscriptions").addEventListener("click", (event) => {
+    const delBtn = event.target.closest(".sub-delete-button");
+    if (delBtn) { void handleDeleteSubscription(delBtn); return; }
+    const checkBtn = event.target.closest(".sub-check-button");
+    if (checkBtn) { void handleCheckOne(checkBtn); return; }
+  });
+
   setInterval(() => { void loadCarts(); }, 30000);
+  setInterval(() => { void loadSubscriptions(); }, 60000);
 });
 
 async function loadHealth() {
@@ -888,5 +903,150 @@ async function handleDeleteCart(button) {
     await loadCarts();
   } catch (error) {
     console.error("Delete cart failed:", error);
+  }
+}
+
+// ── subscription functions ──────────────────────────────
+
+async function loadSubscriptions() {
+  try {
+    const [subResp, eventResp] = await Promise.all([
+      apiRequest("/api/subscriptions", { method: "GET" }),
+      apiRequest("/api/subscriptions/events", { method: "GET" }),
+    ]);
+    renderSubscriptions(subResp.subscriptions || []);
+    renderSubscriptionEvents(eventResp.events || []);
+  } catch (error) {
+    console.error("Load subscriptions failed:", error);
+  }
+}
+
+function renderSubscriptions(subs) {
+  const el = document.getElementById("subscriptions");
+  if (!subs.length) {
+    el.innerHTML = `<div class="muted">暂无追番订阅。点击"添加追番"开始。</div>`;
+    document.getElementById("subscription-status").textContent = "";
+    return;
+  }
+  document.getElementById("subscription-status").textContent = `共 ${subs.length} 个订阅`;
+  el.innerHTML = subs.map((s) => {
+    const lastCheck = s.last_check_at ? formatDate(s.last_check_at) : "从未";
+    const lastEp = s.last_episode || "-";
+    return `
+      <div class="cart-item">
+        <div class="cart-header">
+          <div>
+            <strong>${escapeHtml(s.name)}</strong>
+            <span class="cart-meta"> | 上次：${lastCheck} | 最新：${lastEp}</span>
+            ${s.enabled ? "" : `<span class="cart-status status-exhausted">已停用</span>`}
+          </div>
+          <div>
+            <button type="button" class="button sub-check-button" data-sub-id="${s.id}">检查</button>
+            <button type="button" class="button button-muted sub-delete-button" data-sub-id="${s.id}">删除</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderSubscriptionEvents(events) {
+  const el = document.getElementById("subscription-events");
+  if (!events.length) {
+    el.innerHTML = "";
+    return;
+  }
+  const recent = events.slice(0, 10);
+  el.innerHTML = `
+    <div class="section-label" style="margin-top:16px;">最近事件</div>
+    <ul class="kv-list">
+      ${recent.map((e) => `
+        <li>${escapeHtml(formatDate(e.created_at))} [${escapeHtml(e.subscription_name || "")}] ${escapeHtml(e.event_type)}：${escapeHtml(e.details || "")} ${e.episode ? `第${escapeHtml(e.episode)}集` : ""}</li>
+      `).join("")}
+    </ul>
+  `;
+}
+
+function showSubModal() {
+  document.getElementById("sub-modal").classList.remove("hidden");
+  document.getElementById("sub-name").value = "";
+  document.getElementById("sub-source").value = "";
+  document.getElementById("sub-match").value = "";
+  document.getElementById("sub-offset").value = "0";
+  document.getElementById("sub-modal-error").classList.add("hidden");
+}
+
+function hideSubModal() {
+  document.getElementById("sub-modal").classList.add("hidden");
+}
+
+async function handleAddSubscription() {
+  const name = document.getElementById("sub-name").value.trim();
+  if (!name) {
+    document.getElementById("sub-modal-error").textContent = "名称不能为空";
+    document.getElementById("sub-modal-error").classList.remove("hidden");
+    return;
+  }
+  try {
+    await apiRequest("/api/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        source_name: document.getElementById("sub-source").value.trim(),
+        match_name: document.getElementById("sub-match").value.trim(),
+        episode_offset: parseInt(document.getElementById("sub-offset").value, 10) || 0,
+      }),
+    });
+    hideSubModal();
+    await loadSubscriptions();
+  } catch (error) {
+    document.getElementById("sub-modal-error").textContent = error.message;
+    document.getElementById("sub-modal-error").classList.remove("hidden");
+  }
+}
+
+async function handleDeleteSubscription(button) {
+  const subId = button.getAttribute("data-sub-id");
+  if (!subId) return;
+  if (!confirm("确定删除此追番？")) return;
+  try {
+    await apiRequest(`/api/subscriptions/${subId}`, { method: "DELETE" });
+    await loadSubscriptions();
+  } catch (error) {
+    console.error("Delete subscription failed:", error);
+  }
+}
+
+async function handleCheckOne(button) {
+  const subId = button.getAttribute("data-sub-id");
+  if (!subId) return;
+  button.disabled = true;
+  button.textContent = "检查中...";
+  try {
+    await apiRequest(`/api/subscriptions/${subId}/check`, { method: "POST" });
+    await loadSubscriptions();
+    await loadCarts();
+  } catch (error) {
+    console.error("Check subscription failed:", error);
+  } finally {
+    button.disabled = false;
+    button.textContent = "检查";
+  }
+}
+
+async function handleCheckAll() {
+  const btn = document.getElementById("sub-check-all-button");
+  btn.disabled = true;
+  btn.textContent = "检查中...";
+  try {
+    await apiRequest("/api/subscriptions/check-all", { method: "POST" });
+    await loadSubscriptions();
+    await loadCarts();
+  } catch (error) {
+    console.error("Check all failed:", error);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "全部检查";
   }
 }

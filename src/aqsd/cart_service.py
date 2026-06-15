@@ -9,7 +9,8 @@ from typing import Callable
 from loguru import logger
 
 from aqsd.cart_store import CartStore
-from aqsd.models import Cart, CartEvent, CartItem
+from aqsd.database import Database
+from aqsd.models import Candidate, Cart, CartEvent, CartItem
 from aqsd.qbittorrent import QBittorrentClient
 from aqsd.utils import fix_magnet_name
 
@@ -48,9 +49,11 @@ class CartService:
         self,
         store: CartStore,
         qb_factory: Callable[[], QBittorrentClient],
+        db: Database | None = None,
     ) -> None:
         self._store = store
         self._qb_factory = qb_factory
+        self._db = db
         self._probe_lock = threading.Lock()
         self._monitor_running = False
         self._monitor_thread: threading.Thread | None = None
@@ -294,6 +297,14 @@ class CartService:
                     message="下载完成或已从 qB 移除",
                 ))
                 self._store.save(cart)
+                if self._db and cart.anime_name and cart.episode:
+                    self._db.mark_downloaded(Candidate(
+                        title=cart.anime_name,
+                        anime_name=cart.anime_name,
+                        episode=cart.episode,
+                        url="",
+                    ))
+                    logger.info("Marked {}/{} as downloaded", cart.anime_name, cart.episode)
                 continue
 
             if self._is_dead(torrent):

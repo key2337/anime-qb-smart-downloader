@@ -13,6 +13,7 @@ from aqsd.models import Candidate
 
 SEEDER_KEYS = ("seeders", "nyaa_seeders", "torrent_seeds", "torrentSeeders")
 USER_AGENT = "aqsd/0.1.0"
+MIKAN_DOMAINS = ("mikanani.me", "mikanime.tv")
 
 
 def parse_datetime(value: str | struct_time | None) -> datetime | None:
@@ -30,6 +31,10 @@ def parse_datetime(value: str | struct_time | None) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _is_mikan_url(url: str) -> bool:
+    return any(domain in url.casefold() for domain in MIKAN_DOMAINS)
 
 
 def extract_seeders(entry: dict[str, Any]) -> int:
@@ -77,7 +82,12 @@ def inspect_rss(source: Any) -> dict[str, Any]:
 
 
 def build_keyword_rss_url(base_url: str, keyword: str) -> str:
-    """Build a keyword-filtered RSS URL for dmhy-style sources."""
+    """Build a keyword-filtered RSS URL for dmhy-style sources.
+
+    Mikan URLs are returned unchanged (Mikan aggregation RSS has no keyword param).
+    """
+    if _is_mikan_url(base_url):
+        return base_url
     from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
 
     parsed = urlparse(base_url)
@@ -114,6 +124,12 @@ def fetch_rss(source: Any, keyword: str | None = None) -> list[Candidate]:
         magnet = _extract_magnet(entry)
         info_hash = _extract_info_hash_from_magnet(magnet)
 
+        enclosure_url = _extract_enclosure(entry)
+        if _is_mikan_url(source_url) and enclosure_url:
+            url = enclosure_url
+            magnet = None
+            info_hash = None
+
         items.append(
             Candidate(
                 title=title,
@@ -139,6 +155,21 @@ def _extract_magnet(entry: dict[str, Any]) -> str | None:
         href = link.get("href", "")
         if href.casefold().startswith("magnet:"):
             return href
+    return None
+
+
+def _extract_enclosure(entry: dict[str, Any]) -> str | None:
+    """Extract .torrent enclosure URL from a feedparser entry (Mikan-style)."""
+    for enc in entry.get("enclosures", []):
+        if (enc.get("type") or "").casefold() == "application/x-bittorrent":
+            href = enc.get("href", "")
+            if href:
+                return href
+    for link in entry.get("links", []):
+        if (link.get("type") or "").casefold() == "application/x-bittorrent":
+            href = link.get("href", "")
+            if href:
+                return href
     return None
 
 

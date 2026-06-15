@@ -62,6 +62,21 @@ class AnimeRuleSettings(BaseModel):
         return AnimeRule(**self.model_dump())
 
 
+class MikanSettings(BaseModel):
+    token: str = ""
+    mirror_domain: str = "mikanani.me"
+
+
+class SubscriptionSettings(BaseModel):
+    model_config = {"extra": "ignore"}
+    name: str
+    enabled: bool = True
+    source_name: str = ""
+    match_name: str = ""
+    episode_offset: int = 0
+    last_check_at: str | None = None
+
+
 class AppConfig(BaseModel):
     model_config = {"extra": "ignore"}
 
@@ -72,6 +87,8 @@ class AppConfig(BaseModel):
     probe_policy: ProbePolicy = Field(default_factory=ProbePolicy)
     profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
     anime: list[AnimeRuleSettings] = Field(default_factory=list)
+    mikan: MikanSettings = Field(default_factory=MikanSettings)
+    subscriptions: list[SubscriptionSettings] = Field(default_factory=list)
 
     @property
     def qb(self) -> QBittorrentSettings:

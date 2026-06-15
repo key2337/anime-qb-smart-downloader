@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 from aqsd.cart_service import CartService
 from aqsd.cart_store import CartStore
 from aqsd.config import AppConfig
+from aqsd.database import Database
 from aqsd.discovery import SearchRequest, discover_search_candidates
 from aqsd.models import Candidate, ExpandedQueryDetail, ScoreBreakdown, SearchDiagnostics, TitleEvidence
 from aqsd.qbittorrent import QBittorrentAddTorrentError, QBittorrentClient
+from aqsd.subscription import SubscriptionManager
 from aqsd.utils import fix_magnet_name
 
 
@@ -53,6 +55,13 @@ class CreateCartPayload(BaseModel):
 
 class AddCartItemsPayload(BaseModel):
     items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CreateSubscriptionPayload(BaseModel):
+    name: str
+    source_name: str = ""
+    match_name: str = ""
+    episode_offset: int = 0
 
 
 def _build_qb_client(config: AppConfig) -> QBittorrentClient:
@@ -173,8 +182,10 @@ def create_api_app(config: AppConfig):
 
         return {"torrents": [_serialize_torrent(t) for t in torrents]}
 
+    db_path = Path(config.app.database).parent / "app.db"
+    db = Database(str(db_path))
     cart_store = CartStore(Path(config.app.database).parent / "carts.json")
-    cart_service = CartService(cart_store, lambda: _build_qb_client(config))
+    cart_service = CartService(cart_store, lambda: _build_qb_client(config), db=db)
 
     @app.post("/api/carts")
     def create_cart(payload: CreateCartPayload) -> dict[str, Any]:
@@ -218,7 +229,77 @@ def create_api_app(config: AppConfig):
             raise http_exception(status_code=404, detail="cart not found")
         return {"ok": True}
 
+    # ── subscriptions ────────────────────────────────────
+
+    subscription_manager = SubscriptionManager(config, db, cart_service)
+
+    @app.get("/api/subscriptions")
+    def list_subscriptions() -> dict[str, Any]:
+        rows = db.list_subscriptions()
+        subs = []
+        for row in rows:
+            subs.append({
+                "id": row["id"],
+                "name": row["name"],
+                "enabled": bool(row["enabled"]),
+                "source_name": row["source_name"] or "",
+                "match_name": row["match_name"] or "",
+                "episode_offset": row["episode_offset"] or 0,
+                "last_check_at": row["last_check_at"],
+                "last_episode": row["last_episode"],
+            })
+        return {"subscriptions": subs}
+
+    @app.post("/api/subscriptions")
+    def create_subscription(payload: CreateSubscriptionPayload) -> dict[str, Any]:
+        if not payload.name.strip():
+            raise http_exception(status_code=400, detail="name must not be empty")
+        sub_id = db.save_subscription(
+            name=payload.name.strip(),
+            source_name=payload.source_name.strip(),
+            match_name=payload.match_name.strip(),
+            episode_offset=payload.episode_offset,
+        )
+        return {"ok": True, "id": sub_id}
+
+    @app.delete("/api/subscriptions/{sub_id}")
+    def delete_subscription(sub_id: int) -> dict[str, Any]:
+        ok = db.delete_subscription(sub_id)
+        if not ok:
+            raise http_exception(status_code=404, detail="subscription not found")
+        return {"ok": True}
+
+    @app.post("/api/subscriptions/{sub_id}/check")
+    def check_subscription(sub_id: int) -> dict[str, Any]:
+        result = subscription_manager.check_one_by_id(sub_id)
+        if result is None:
+            raise http_exception(status_code=404, detail="subscription not found or disabled")
+        return _serialize_check_result(result)
+
+    @app.post("/api/subscriptions/check-all")
+    def check_all_subscriptions() -> dict[str, Any]:
+        results = subscription_manager.check_all()
+        return {"results": {name: _serialize_check_result(r) for name, r in results.items()}}
+
+    @app.get("/api/subscriptions/events")
+    def subscription_events() -> dict[str, Any]:
+        rows = db.get_recent_events(limit=100)
+        events = []
+        for row in rows:
+            events.append({
+                "id": row["id"],
+                "subscription_id": row["subscription_id"],
+                "subscription_name": row["subscription_name"],
+                "event_type": row["event_type"],
+                "anime_name": row["anime_name"],
+                "episode": row["episode"],
+                "details": row["details"],
+                "created_at": row["created_at"],
+            })
+        return {"events": events}
+
     app.state.cart_service = cart_service
+    app.state.subscription_manager = subscription_manager
     return app
 
 
@@ -236,6 +317,13 @@ def run_server_command(config: AppConfig, *, host: str = DEFAULT_API_HOST, port:
         if cart_service is not None and config.qb.base_url.strip():
             cart_service.start_monitor()
             print("Cart monitor started")
+    except Exception:
+        pass
+    try:
+        sub_mgr = getattr(app.state, "subscription_manager", None)
+        if sub_mgr is not None and config.subscriptions:
+            sub_mgr.start()
+            print(f"Subscription manager started ({len(config.subscriptions)} subscriptions)")
     except Exception:
         pass
     print(f"Starting aqsd API server at http://{host}:{port}")
@@ -359,6 +447,17 @@ def serialize_cart(cart: Any) -> dict[str, Any]:
         "status": cart.status,
         "events": [asdict(event) for event in cart.events],
         "created_at": cart.created_at,
+    }
+
+
+def _serialize_check_result(result) -> dict[str, Any]:
+    return {
+        "subscription_name": result.subscription_name,
+        "rss_entries": result.rss_entries,
+        "matched": result.matched,
+        "new_episodes": list(result.new_episodes),
+        "created_carts": list(result.created_carts),
+        "errors": list(result.errors),
     }
 
 

@@ -181,3 +181,25 @@ class DownloadTask:
     last_error: str | None = None
     last_progress: float = 0.0
     last_speed_kbps: float = 0.0
+
+
+@dataclass(slots=True)
+class Subscription:
+    id: int
+    name: str
+    enabled: bool = True
+    source_name: str = ""
+    match_name: str = ""
+    episode_offset: int = 0
+    last_check_at: str | None = None
+    last_episode: str | None = None
+
+
+@dataclass(slots=True)
+class SubscriptionCheckResult:
+    subscription_name: str
+    rss_entries: int = 0
+    matched: int = 0
+    new_episodes: list[str] = field(default_factory=list)
+    created_carts: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)

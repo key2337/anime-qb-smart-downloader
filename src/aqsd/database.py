@@ -88,6 +88,27 @@ CREATE TABLE IF NOT EXISTS title_metadata_cache (
   expires_at TIMESTAMP NOT NULL,
   UNIQUE(query, source)
 );
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  source_name TEXT NOT NULL DEFAULT '',
+  match_name TEXT NOT NULL DEFAULT '',
+  episode_offset INTEGER NOT NULL DEFAULT 0,
+  last_check_at TIMESTAMP,
+  last_episode TEXT
+);
+
+CREATE TABLE IF NOT EXISTS subscription_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  subscription_id INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  anime_name TEXT NOT NULL DEFAULT '',
+  episode TEXT,
+  details TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -114,7 +135,7 @@ DOWNLOAD_TASK_COLUMNS: dict[str, str] = {
 class Database:
     def __init__(self, path: str):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
@@ -452,6 +473,72 @@ class Database:
             (query, source),
         )
         self.conn.commit()
+
+    # ── subscriptions ────────────────────────────────────
+
+    def list_subscriptions(self) -> list[sqlite3.Row]:
+        return list(self.conn.execute(
+            "SELECT * FROM subscriptions ORDER BY id ASC"
+        ).fetchall())
+
+    def get_subscription(self, sub_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM subscriptions WHERE id = ?", (sub_id,)
+        ).fetchone()
+
+    def save_subscription(self, name: str, source_name: str = "", match_name: str = "",
+                          episode_offset: int = 0, enabled: bool = True) -> int:
+        cursor = self.conn.execute(
+            """
+            INSERT OR REPLACE INTO subscriptions(name, enabled, source_name, match_name, episode_offset)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (name, int(enabled), source_name, match_name, episode_offset),
+        )
+        self.conn.commit()
+        return cursor.lastrowid or 0
+
+    def update_subscription_check(self, sub_id: int, last_episode: str | None = None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        if last_episode is not None:
+            self.conn.execute(
+                "UPDATE subscriptions SET last_check_at = ?, last_episode = ? WHERE id = ?",
+                (now, last_episode, sub_id),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE subscriptions SET last_check_at = ? WHERE id = ?",
+                (now, sub_id),
+            )
+        self.conn.commit()
+
+    def delete_subscription(self, sub_id: int) -> bool:
+        cursor = self.conn.execute("DELETE FROM subscriptions WHERE id = ?", (sub_id,))
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def add_subscription_event(self, sub_id: int, event_type: str, anime_name: str = "",
+                               episode: str | None = None, details: str = "") -> None:
+        self.conn.execute(
+            """
+            INSERT INTO subscription_events(subscription_id, event_type, anime_name, episode, details)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (sub_id, event_type, anime_name, episode, details),
+        )
+        self.conn.commit()
+
+    def get_recent_events(self, limit: int = 100) -> list[sqlite3.Row]:
+        return list(self.conn.execute(
+            """
+            SELECT e.*, s.name as subscription_name
+            FROM subscription_events e
+            LEFT JOIN subscriptions s ON s.id = e.subscription_id
+            ORDER BY e.created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall())
 
     def _migrate(self) -> None:
         existing_columns = {

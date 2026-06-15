@@ -97,8 +97,34 @@
       <h2>下载队列</h2>
       <div id="carts" class="muted">暂无下载任务。搜索后勾选候选，点击"加入下载队列"。</div>
     </section>
+
+    <section class="card" id="subscription-section">
+      <h2>追番管理</h2>
+      <div class="toolbar">
+        <span id="subscription-status" class="muted"></span>
+        <button id="sub-add-button" class="button">添加追番</button>
+        <button id="sub-check-all-button" class="button">全部检查</button>
+      </div>
+      <div id="subscriptions" class="muted">暂无追番订阅。点击"添加追番"开始。</div>
+      <div id="subscription-events"></div>
+    </section>
+
+    <div id="sub-modal" class="modal hidden">
+      <div class="modal-content">
+        <h3>添加追番</h3>
+        <label><span>名称</span><input id="sub-name" type="text" placeholder="番剧名称"></label>
+        <label><span>RSS 源</span><input id="sub-source" type="text" placeholder="例如 mikan-agg（留空用默认）"></label>
+        <label><span>匹配规则</span><input id="sub-match" type="text" placeholder="anime 规则名（留空用名称）"></label>
+        <label><span>集数偏移</span><input id="sub-offset" type="number" value="0"></label>
+        <div class="toolbar">
+          <button id="sub-save-button" class="button button-primary">保存</button>
+          <button id="sub-cancel-button" class="button">取消</button>
+        </div>
+        <div id="sub-modal-error" class="message error hidden"></div>
+      </div>
+    </div>
   </main>
 
-  <script src="/app.js?v=8"></script>
+  <script src="/app.js?v=9"></script>
 </body>
 </html>
