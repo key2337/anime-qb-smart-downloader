@@ -119,6 +119,14 @@ class QBittorrentClient:
         )
         response.raise_for_status()
 
+    def resume_torrents(self, hashes: str) -> None:
+        response = self.session.post(
+            f"{self.base_url}/api/v2/torrents/resume",
+            data={"hashes": hashes},
+            timeout=10,
+        )
+        response.raise_for_status()
+
     def _raise_for_add_failure(
         self,
         response: requests.Response,

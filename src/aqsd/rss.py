@@ -148,5 +148,21 @@ def _extract_info_hash_from_magnet(magnet: str | None) -> str | None:
     import re
     match = re.search(r"btih:([A-Za-z0-9]+)", magnet)
     if match:
-        return match.group(1)
+        return _normalize_info_hash(match.group(1))
     return None
+
+
+def _normalize_info_hash(raw: str) -> str:
+    """Convert info_hash to lowercase hex. Handles Base32 (32 chars) and hex (40 chars)."""
+    import base64
+    stripped = raw.strip()
+    if len(stripped) == 32:
+        pad = 8 - (len(stripped) % 8)
+        if pad == 8:
+            pad = 0
+        try:
+            raw_bytes = base64.b32decode(stripped.upper() + "=" * pad)
+            return raw_bytes.hex().casefold()
+        except Exception:
+            pass
+    return stripped.casefold()

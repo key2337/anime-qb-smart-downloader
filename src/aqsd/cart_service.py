@@ -11,7 +11,7 @@ from loguru import logger
 from aqsd.cart_store import CartStore
 from aqsd.models import Cart, CartEvent, CartItem
 from aqsd.qbittorrent import QBittorrentClient
-from aqsd.utils import build_task_tag, fix_magnet_name
+from aqsd.utils import fix_magnet_name
 
 PROBE_DURATION_SECONDS = 180
 PROBE_MIN_SPEED_KBPS = 10
@@ -151,81 +151,90 @@ class CartService:
                 self._store.save(cart)
                 return
 
+            # Pause active torrents to free download slots for probe
+            paused_hashes = _pause_active_torrents(qb)
+
             attempts: dict[str, CartItem] = {}
-            for item in remaining:
-                tag = build_task_tag(cart.anime_name, cart.episode)
-                download_url = fix_magnet_name(item.magnet or item.url, item.title)
-                try:
-                    qb.add_torrent(
-                        download_url,
-                        category=None,
-                        save_path=None,
-                        tags=tag,
-                    )
-                    attempts[tag] = item
-                except Exception as exc:
-                    logger.warning("Probe add failed for {}: {}", item.title, exc)
-
-            if not attempts:
-                cart.status = "idle"
-                cart.events.append(CartEvent(
-                    timestamp=_now_iso(),
-                    type="probe_end",
-                    message="probe 失败：无法添加任何候选到 qB",
-                ))
-                self._store.save(cart)
-                return
-
-            time.sleep(PROBE_DURATION_SECONDS)
-
-            by_tag = self._list_qb_torrents_by_tag(qb)
-            best_tag: str | None = None
-            best_score = float("-inf")
-
-            for tag, item in attempts.items():
-                torrent = by_tag.get(tag)
-                if torrent is None:
-                    continue
-                score = self._probe_score(torrent)
-                if score > best_score:
-                    best_score = score
-                    best_tag = tag
-
-            selected = attempts.get(best_tag) if best_tag else None
-            # delete losers
-            for tag in attempts:
-                if tag == best_tag:
-                    continue
-                torrent = by_tag.get(tag)
-                if torrent and torrent.get("hash"):
+            try:
+                for item in remaining:
+                    download_url = fix_magnet_name(item.magnet or item.url, item.title)
                     try:
-                        qb.delete_torrent(torrent["hash"], delete_files=True)
+                        qb.add_torrent(download_url)
+                        if item.info_hash:
+                            attempts[item.info_hash.casefold()] = item
                     except Exception as exc:
-                        logger.warning("Probe loser delete failed: {}", exc)
+                        logger.warning("Probe add failed for {}: {}", item.title, exc)
 
-            if selected is None:
-                cart.status = "idle"
+                if not attempts:
+                    cart.status = "idle"
+                    cart.events.append(CartEvent(
+                        timestamp=_now_iso(),
+                        type="probe_end",
+                        message="probe 失败：无法添加任何候选到 qB",
+                    ))
+                    self._store.save(cart)
+                    return
+
+                time.sleep(PROBE_DURATION_SECONDS)
+
+                by_hash = _build_qb_torrent_map(qb)
+                best_hash: str | None = None
+                best_score = float("-inf")
+
+                for info_hash, item in attempts.items():
+                    torrent = by_hash.get(info_hash)
+                    if torrent is None:
+                        continue
+                    score = self._probe_score(torrent)
+                    if score > best_score:
+                        best_score = score
+                        best_hash = info_hash
+
+                selected = attempts.get(best_hash) if best_hash else None
+                # delete losers
+                for info_hash in attempts:
+                    if info_hash == best_hash:
+                        continue
+                    torrent = by_hash.get(info_hash)
+                    if torrent and torrent.get("hash"):
+                        try:
+                            qb.delete_torrent(torrent["hash"], delete_files=True)
+                        except Exception as exc:
+                            logger.warning("Probe loser delete failed: {}", exc)
+
+                if selected is None:
+                    # clean up all probe torrents — none connected
+                    for info_hash in attempts:
+                        torrent = by_hash.get(info_hash)
+                        if torrent and torrent.get("hash"):
+                            try:
+                                qb.delete_torrent(torrent["hash"], delete_files=True)
+                            except Exception as exc:
+                                logger.warning("Probe cleanup failed: {}", exc)
+                    cart.status = "idle"
+                    cart.events.append(CartEvent(
+                        timestamp=_now_iso(),
+                        type="probe_end",
+                        message="probe 结束：无候选获得连接，请稍后重试",
+                    ))
+                    self._store.save(cart)
+                    return
+
+                if selected.info_hash:
+                    cart.tried_hashes.append(selected.info_hash)
+                cart.active_hash = best_hash
+                cart.active_title = selected.title
+                cart.fallback_count = 0
+                cart.status = "downloading"
                 cart.events.append(CartEvent(
                     timestamp=_now_iso(),
                     type="probe_end",
-                    message="probe 结束：无候选获得连接，请稍后重试",
+                    message=f"选中：{selected.title}（得分 {best_score:.0f}）",
                 ))
                 self._store.save(cart)
-                return
-
-            if selected.info_hash:
-                cart.tried_hashes.append(selected.info_hash)
-            cart.active_hash = self._get_hash_for_tag(qb, best_tag) if best_tag else None
-            cart.active_title = selected.title
-            cart.fallback_count = 0
-            cart.status = "downloading"
-            cart.events.append(CartEvent(
-                timestamp=_now_iso(),
-                type="probe_end",
-                message=f"选中：{selected.title}（得分 {best_score:.0f}）",
-            ))
-            self._store.save(cart)
-            logger.info("Cart {} probe complete: selected {}", cart_id, selected.title)
+                logger.info("Cart {} probe complete: selected {}", cart_id, selected.title)
+            finally:
+                _resume_torrents(qb, paused_hashes)
 
     @staticmethod
     def _probe_score(torrent: dict) -> float:
@@ -361,24 +370,48 @@ class CartService:
     # ── helpers ─────────────────────────────────────────────
 
     @staticmethod
-    def _list_qb_torrents_by_tag(qb: QBittorrentClient) -> dict[str, dict]:
-        by_tag: dict[str, dict] = {}
-        try:
-            for torrent in qb.list_torrents():
-                raw_tags = torrent.get("tags", "") or ""
-                for tag in [t.strip() for t in raw_tags.split(",") if t.strip()]:
-                    by_tag[tag] = torrent
-        except Exception:
-            pass
-        return by_tag
+    def _normalize_hash(hash_value: str | None) -> str | None:
+        if not hash_value:
+            return None
+        return hash_value.strip().casefold()
 
-    @staticmethod
-    def _get_hash_for_tag(qb: QBittorrentClient, tag: str) -> str | None:
-        try:
-            for torrent in qb.list_torrents():
-                raw_tags = torrent.get("tags", "") or ""
-                if tag in [t.strip() for t in raw_tags.split(",") if t.strip()]:
-                    return torrent.get("hash")
-        except Exception:
-            pass
-        return None
+
+def _pause_active_torrents(qb: QBittorrentClient) -> list[str]:
+    """Pause all downloading or queued torrents to free slots for probe. Returns paused hashes."""
+    active_states = ("downloading", "queueddl", "queuedup", "stalleddl", "stalledup", "forcedl", "forceup")
+    paused: list[str] = []
+    try:
+        for torrent in qb.list_torrents():
+            state = (torrent.get("state") or "").casefold()
+            if state in active_states:
+                h = torrent.get("hash")
+                if h:
+                    paused.append(h)
+        if paused:
+            qb.pause_torrents("|".join(paused))
+            logger.info("Probe: paused {} active torrents", len(paused))
+    except Exception as exc:
+        logger.warning("Probe: failed to pause torrents: {}", exc)
+    return paused
+
+
+def _resume_torrents(qb: QBittorrentClient, hashes: list[str]) -> None:
+    if not hashes:
+        return
+    try:
+        qb.resume_torrents("|".join(hashes))
+        logger.info("Probe: resumed {} torrents", len(hashes))
+    except Exception as exc:
+        logger.warning("Probe: failed to resume torrents: {}", exc)
+
+
+def _build_qb_torrent_map(qb: QBittorrentClient) -> dict[str, dict]:
+    by_hash: dict[str, dict] = {}
+    try:
+        for torrent in qb.list_torrents():
+            h = (torrent.get("hash") or "").strip().casefold()
+            if h:
+                by_hash[h] = torrent
+    except Exception:
+        pass
+    return by_hash
