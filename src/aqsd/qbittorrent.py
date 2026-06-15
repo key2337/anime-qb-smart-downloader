@@ -127,6 +127,27 @@ class QBittorrentClient:
         )
         response.raise_for_status()
 
+    def set_force_start(self, hashes: str, enabled: bool = True) -> None:
+        response = self.session.post(
+            f"{self.base_url}/api/v2/torrents/setForceStart",
+            data={"hashes": hashes, "value": "true" if enabled else "false"},
+            timeout=10,
+        )
+        response.raise_for_status()
+
+    def get_preferences(self) -> dict[str, Any]:
+        response = self.session.get(f"{self.base_url}/api/v2/app/preferences", timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    def set_preferences(self, prefs: dict[str, Any]) -> None:
+        response = self.session.post(
+            f"{self.base_url}/api/v2/app/setPreferences",
+            json=prefs,
+            timeout=10,
+        )
+        response.raise_for_status()
+
     def _raise_for_add_failure(
         self,
         response: requests.Response,

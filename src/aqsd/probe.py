@@ -62,7 +62,7 @@ def probe_candidates(
         return ProbeResult(selected=None, selected_tag=None, attempts=[], scores={})
 
     # Batch resume probe torrents to avoid metaDL queue blocking
-    time.sleep(2)
+    time.sleep(2)  # best-effort; slow qB may need longer
     by_tag = _list_torrents_by_tag(qb)
     probe_hashes: list[str] = []
     for attempt in attempts:

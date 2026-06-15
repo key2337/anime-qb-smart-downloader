@@ -56,22 +56,28 @@ def _contains_token_sequence(text_tokens: list[str], keyword_tokens: list[str]) 
     return any(text_tokens[index : index + window] == keyword_tokens for index in range(len(text_tokens) - window + 1))
 
 
+def candidate_episode_key(candidate) -> tuple[int, int]:
+    season = candidate.season or 0
+    episode = int(candidate.episode or "0")
+    return season, episode
+
+
 def build_task_tag(anime_name: str, episode: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "-", normalize_text(anime_name)).strip("-")
     suffix = uuid.uuid4().hex[:8]
     return f"aqsd-{normalized or 'anime'}-{episode}-{suffix}"
 
 
-def fix_magnet_name(url: str, title: str | None) -> str:
+def fix_magnet_name(url: str | None, title: str | None) -> str:
     """Inject display name into magnet URI when dn parameter is missing or empty."""
-    if not url.casefold().startswith("magnet:"):
-        return url
+    if not url or not url.casefold().startswith("magnet:"):
+        return url or ""
     if not title:
         return url
     from urllib.parse import quote
 
     if "dn=" in url:
-        url = re.sub(r"dn=[^&]*", f"dn={quote(title)}", url)
+        url = re.sub(r"((?:^|&)dn=)[^&]*", rf"\g<1>{quote(title)}", url)
     else:
         url = re.sub(r"magnet:\?(?=xt)", f"magnet:?dn={quote(title)}&", url)
     return url

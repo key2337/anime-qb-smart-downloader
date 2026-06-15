@@ -21,7 +21,7 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.resolution, "1080p")
         self.assertEqual(parsed.source_type, "WEB-DL")
         self.assertEqual(parsed.subtitle_type, "embedded")
-        self.assertTrue(parsed.is_raw)
+        self.assertFalse(parsed.is_raw)
 
     def test_parse_dmhy_bracket_episode(self) -> None:
         candidate = Candidate(

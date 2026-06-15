@@ -56,10 +56,9 @@ def match_candidate(
         if profile.get("allow_subtitled", True) is False and candidate.subtitle_type in {"embedded", "external"}:
             continue
 
-        if rule.profile == "preferred_group":
-            allow_other_group = profile.get("allow_other_group", True)
-            if not allow_other_group and rule.prefer_groups and candidate.group not in rule.prefer_groups:
-                continue
+        allow_other_group = profile.get("allow_other_group", True)
+        if not allow_other_group and rule.prefer_groups and candidate.group not in rule.prefer_groups:
+            continue
 
         candidate.matched_rule_name = rule.name
         candidate.anime_name = rule.name

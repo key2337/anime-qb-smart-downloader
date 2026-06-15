@@ -184,8 +184,6 @@ def parse_candidate(candidate: Candidate) -> Candidate:
     candidate.season = _extract_season(title)
     candidate.is_raw = any(marker in lower_title for marker in RAW_MARKERS)
     candidate.source_type = _extract_source_type(title)
-    if candidate.source_type == "WEB-DL":
-        candidate.is_raw = True
 
     free_text_range = FREE_TEXT_RANGE_RE.search(title)
     candidate.is_batch = (

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aqsd.models import AnimeRule, Candidate, ExpandedQueryDetail, ScoreBreakdown, ScoreReason
-from aqsd.utils import contains_search_keyword, normalize_text
+from aqsd.utils import candidate_episode_key, contains_search_keyword, normalize_text
 
 
 GROUP_PREFERENCE_BASE = 80.0
@@ -79,12 +79,6 @@ def _score_group_preference(candidate: Candidate, rule: AnimeRule) -> float:
         return max(0.0, GROUP_PREFERENCE_BASE - index * GROUP_PREFERENCE_STEP)
 
     return NON_PREFERRED_GROUP_PENALTY
-
-
-def _candidate_episode_key(candidate: Candidate) -> tuple[int, int]:
-    season = candidate.season or 0
-    episode = int(candidate.episode or "0")
-    return season, episode
 
 
 def _add_reason(breakdown: ScoreBreakdown, code: str, delta: float, message: str) -> None:
@@ -259,7 +253,7 @@ def explain_score_candidate(
     elif group_score < 0:
         _add_reason(breakdown, "group_penalty", group_score, f"group penalty: {candidate.group or 'unknown'}")
 
-    if latest_episode_key is not None and _candidate_episode_key(candidate) == latest_episode_key:
+    if latest_episode_key is not None and candidate_episode_key(candidate) == latest_episode_key:
         _add_reason(
             breakdown,
             "latest_episode_bonus",

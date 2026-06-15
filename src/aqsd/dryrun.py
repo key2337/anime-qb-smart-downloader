@@ -8,6 +8,7 @@ from aqsd.config import AppConfig
 from aqsd.discovery import discover_rule_candidates
 from aqsd.models import Candidate
 from aqsd.scorer import explain_score_candidate
+from aqsd.utils import candidate_episode_key
 
 
 @dataclass(slots=True)
@@ -19,19 +20,13 @@ class DryRunReport:
     top_candidates: list[Candidate]
 
 
-def _candidate_episode_key(candidate: Candidate) -> tuple[int, int]:
-    season = candidate.season or 0
-    episode = int(candidate.episode or "0")
-    return season, episode
-
-
 def _filter_latest_only(candidates: list[Candidate]) -> tuple[list[Candidate], tuple[int, int] | None]:
     candidates_with_episode = [candidate for candidate in candidates if candidate.episode]
     if not candidates_with_episode:
         return candidates, None
 
-    latest_key = max(_candidate_episode_key(candidate) for candidate in candidates_with_episode)
-    filtered = [candidate for candidate in candidates_with_episode if _candidate_episode_key(candidate) == latest_key]
+    latest_key = max(candidate_episode_key(candidate) for candidate in candidates_with_episode)
+    filtered = [candidate for candidate in candidates_with_episode if candidate_episode_key(candidate) == latest_key]
     return filtered, latest_key
 
 
