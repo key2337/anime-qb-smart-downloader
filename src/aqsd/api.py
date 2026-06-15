@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from aqsd.cart_service import CartService
@@ -22,7 +21,7 @@ from aqsd.utils import fix_magnet_name
 API_DEPENDENCY_ERROR = "API server dependencies are not installed. Please install fastapi and uvicorn."
 DEFAULT_API_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8765
-MAX_API_SEARCH_LIMIT = 100
+MAX_API_SEARCH_LIMIT = 500
 WEB_DIR = Path(__file__).with_name("web")
 
 
@@ -80,7 +79,7 @@ def create_api_app(config: AppConfig):
     app = fastapi.FastAPI(title="aqsd API", version="0.1.0")
 
     # Shared state created early so endpoints can reference them
-    db_path = Path(config.app.database).parent / "app.db"
+    db_path = config.app.database
     db = Database(str(db_path))
     cart_store = CartStore(Path(config.app.database).parent / "carts.json")
     cart_service = CartService(cart_store, lambda: _build_qb_client(config), db=db)
@@ -234,11 +233,31 @@ def create_api_app(config: AppConfig):
             raise http_exception(status_code=404, detail="cart not found")
         return serialize_cart(cart)
 
+    class StartCartPayload(BaseModel):
+        probe_duration_seconds: int = Field(default=20, ge=10, le=600)
+
     @app.post("/api/carts/{cart_id}/start")
-    def start_cart(cart_id: str) -> dict[str, Any]:
-        cart = cart_service.start_cart(cart_id)
+    def start_cart(cart_id: str, payload: StartCartPayload) -> dict[str, Any]:
+        logger.info("start_cart API called: cart_id={}, received_payload={}", cart_id, payload)
+        duration = payload.probe_duration_seconds
+        cart = cart_service.start_cart(cart_id, probe_duration_seconds=duration)
         if cart is None:
-            raise http_exception(status_code=400, detail="cart cannot be started")
+            raise http_exception(status_code=400, detail="无法启动：购物车状态不正确或有其他购物车正在运行")
+        logger.info("start_cart API success: cart_id={}, duration={}", cart_id, duration)
+        return serialize_cart(cart)
+
+    @app.post("/api/carts/{cart_id}/pause")
+    def pause_cart(cart_id: str) -> dict[str, Any]:
+        cart = cart_service.pause_cart(cart_id)
+        if cart is None:
+            raise http_exception(status_code=400, detail="cart cannot be paused")
+        return serialize_cart(cart)
+
+    @app.post("/api/carts/{cart_id}/resume")
+    def resume_cart(cart_id: str) -> dict[str, Any]:
+        cart = cart_service.resume_cart(cart_id)
+        if cart is None:
+            raise http_exception(status_code=400, detail="无法恢复：购物车状态不正确或有其他购物车正在运行")
         return serialize_cart(cart)
 
     @app.delete("/api/carts/{cart_id}")
@@ -468,6 +487,7 @@ def serialize_cart(cart: Any) -> dict[str, Any]:
         "status": cart.status,
         "events": [asdict(event) for event in cart.events],
         "created_at": cart.created_at,
+        "probe_duration_seconds": cart.probe_duration_seconds,
     }
 
 

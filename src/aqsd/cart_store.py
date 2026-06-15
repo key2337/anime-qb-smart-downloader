@@ -30,6 +30,7 @@ def _cart_from_dict(data: dict[str, Any]) -> Cart:
         status=data.get("status", "idle"),
         events=events,
         created_at=data.get("created_at", ""),
+        probe_duration_seconds=data.get("probe_duration_seconds", 20),
     )
 
 

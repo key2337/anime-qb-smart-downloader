@@ -160,6 +160,7 @@ class Cart:
     status: str = "idle"
     events: list[CartEvent] = field(default_factory=list)
     created_at: str = ""
+    probe_duration_seconds: int = 20
 
 
 @dataclass(slots=True)

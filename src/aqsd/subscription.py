@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
-from aqsd.config import AppConfig
+from aqsd.config import AppConfig, SubscriptionSettings
 from aqsd.database import Database
 from aqsd.matcher import match_candidate
 from aqsd.mikan import enrich_candidates_with_info_hash
@@ -47,7 +47,7 @@ class SubscriptionManager:
         """Run a full subscription check cycle. Returns results keyed by subscription name."""
         results: dict[str, SubscriptionCheckResult] = {}
         with self._check_lock:
-            for rule in self._config.subscriptions:
+            for rule in self._merged_subscriptions():
                 if not rule.enabled:
                     continue
                 try:
@@ -65,13 +65,43 @@ class SubscriptionManager:
         row = self._db.get_subscription(sub_id)
         if row is None:
             return None
+        if not row["enabled"]:
+            return None
+        # Try config rule first (has richer settings), fall back to DB row
         for rule in self._config.subscriptions:
-            if rule.name == row["name"] and rule.enabled:
+            if rule.name == row["name"]:
                 with self._check_lock:
                     return self._check_one(rule)
-        return None
+        rule = SubscriptionSettings(
+            name=row["name"],
+            enabled=row["enabled"],
+            source_name=row["source_name"] or "",
+            match_name=row["match_name"] or "",
+            episode_offset=row["episode_offset"] or 0,
+        )
+        with self._check_lock:
+            return self._check_one(rule)
 
     # ── private ──────────────────────────────────────────
+
+    def _merged_subscriptions(self) -> list:
+        """Return config subscriptions + DB-only subscriptions (by name)."""
+        from aqsd.config import SubscriptionSettings
+        merged: dict[str, SubscriptionSettings] = {}
+        # Config first (authoritative for matching rules)
+        for rule in self._config.subscriptions:
+            merged[rule.name] = rule
+        # DB entries not in config
+        for row in self._db.list_subscriptions():
+            if row["name"] not in merged:
+                merged[row["name"]] = SubscriptionSettings(
+                    name=row["name"],
+                    enabled=row["enabled"],
+                    source_name=row["source_name"] or "",
+                    match_name=row["match_name"] or "",
+                    episode_offset=row["episode_offset"] or 0,
+                )
+        return list(merged.values())
 
     def _check_loop(self) -> None:
         while self._running:
@@ -92,18 +122,22 @@ class SubscriptionManager:
             result.errors.append(f"RSS source not found: {sub.source_name}")
             return result
 
-        # Resolve anime rule
+        # Resolve anime rule; if not found, create a basic one from subscription name
         anime_rule = _find_anime_rule(self._config, sub.match_name)
         if anime_rule is None:
-            result.errors.append(f"Anime rule not found: {sub.match_name}")
-            return result
+            from aqsd.config import AnimeRuleSettings
+            anime_rule = AnimeRuleSettings(
+                name=sub.match_name or sub.name,
+                aliases=[sub.name] if sub.match_name else [],
+                profile="fastest",
+            )
 
         default_category = self._config.qb.default_category
         default_save_path = self._config.qb.default_save_path
 
         # Fetch RSS (use keyword for dmhy-style sources, full feed for Mikan)
         try:
-            source_url = source.url if hasattr(source, "url") else source.url
+            source_url = source.url
             keyword = None
             if "dmhy.org" in source_url and not _is_mikan_url(source_url):
                 keyword = sub.match_name or sub.name
@@ -140,16 +174,7 @@ class SubscriptionManager:
             new.append(c)
 
         # Episode offset filter — skip episodes ≤ threshold
-        # threshold = max(config.episode_offset, DB.last_episode)
         threshold = sub.episode_offset
-        for row in self._db.list_subscriptions():
-            if row["name"] == sub.name and row["last_episode"]:
-                try:
-                    threshold = max(threshold, int(row["last_episode"]))
-                except ValueError:
-                    pass
-                break
-
         if threshold > 0:
             before = len(new)
             filtered: list[Candidate] = []
@@ -188,11 +213,14 @@ class SubscriptionManager:
                 if cart.anime_name and cart.episode:
                     active_episodes.add((cart.anime_name, cart.episode))
 
-        # Create carts for new episodes
-        for (anime_name, episode), candidates in by_episode.items():
+        # Create cart for the first new episode (limit 1 per check)
+        default_anime_name = sub.match_name or sub.name
+        sorted_episodes = sorted(by_episode.keys(), key=lambda k: _episode_sort_key(k[1]))
+        for (anime_name, episode) in sorted_episodes:
             if (anime_name, episode) in active_episodes:
                 logger.debug("Skipping {}/{}: already has active cart", anime_name, episode)
                 continue
+            candidates = by_episode[(anime_name, episode)]
             items = [_candidate_to_cart_dict(c) for c in candidates]
             try:
                 cart = self._cart_service.create_cart(anime_name, episode, items)
@@ -201,6 +229,7 @@ class SubscriptionManager:
                 result.created_carts.append(cart.cart_id)
                 logger.info("Subscription {} created cart {} for {}/{}",
                             sub.name, cart.cart_id, anime_name, episode)
+                break  # only one cart per check
             except Exception as exc:
                 result.errors.append(f"Cart creation failed for {anime_name}/{episode}: {exc}")
                 logger.warning("Failed to create cart for {}/{}: {}", anime_name, episode, exc)
@@ -221,17 +250,17 @@ class SubscriptionManager:
             self._db.update_subscription_check(db_sub["id"], last_episode=last_ep)
             for ep in result.new_episodes:
                 self._db.add_subscription_event(
-                    db_sub["id"], "cart_created", anime_name=anime_name, episode=ep,
-                    details=f"已创建购物车，{len(candidates)} 个候选",
+                    db_sub["id"], "cart_created", anime_name=default_anime_name, episode=ep,
+                    details=f"已创建购物车",
                 )
             if not result.new_episodes:
                 self._db.add_subscription_event(
-                    db_sub["id"], "check_done", anime_name=anime_name,
+                    db_sub["id"], "check_done", anime_name=default_anime_name,
                     details=f"无新剧集（共 {len(items)} 条 RSS）",
                 )
 
         # Also update the config subscription's in-memory last_check_at
-        sub.last_check_at = datetime.now(timezone.utc).isoformat()
+        sub.last_check_at = datetime.now().isoformat(timespec="seconds")
 
         return result
 
@@ -280,3 +309,10 @@ def _find_db_sub_id(db: Database, name: str) -> int:
         if row["name"] == name:
             return row["id"]
     return 0
+
+
+def _episode_sort_key(episode: str) -> int:
+    try:
+        return int(episode)
+    except ValueError:
+        return 0

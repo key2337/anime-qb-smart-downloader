@@ -416,6 +416,11 @@ class Database:
 
     def get_title_metadata_cache(self, query: str, source: str):
         now = datetime.now(timezone.utc)
+        self.conn.execute(
+            "DELETE FROM title_metadata_cache WHERE expires_at <= ?",
+            (now.isoformat(),),
+        )
+        self.conn.commit()
         row = self.conn.execute(
             """
             SELECT aliases_json, expires_at

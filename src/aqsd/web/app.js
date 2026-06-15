@@ -1,9 +1,13 @@
+const PAGE_SIZE = 20;
+
 const state = {
   lastExpandedQueries: [],
   lastExpandedQueryDetails: [],
   lastQuery: "",
   allCandidates: [],
+  filteredCandidates: [],
   carts: [],
+  currentPage: 1,
 };
 
 const elements = {
@@ -22,7 +26,6 @@ const elements = {
   group: document.getElementById("group"),
   season: document.getElementById("season"),
   releaseMode: document.getElementById("release-mode"),
-  limit: document.getElementById("limit"),
   carts: document.getElementById("carts"),
 };
 
@@ -52,6 +55,16 @@ document.addEventListener("DOMContentLoaded", () => {
       void handleStartCart(startBtn);
       return;
     }
+    const pauseBtn = event.target.closest(".cart-pause-button");
+    if (pauseBtn) {
+      void handlePauseCart(pauseBtn);
+      return;
+    }
+    const resumeBtn = event.target.closest(".cart-resume-button");
+    if (resumeBtn) {
+      void handleResumeCart(resumeBtn);
+      return;
+    }
     const deleteBtn = event.target.closest(".cart-delete-button");
     if (deleteBtn) {
       void handleDeleteCart(deleteBtn);
@@ -71,7 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (checkBtn) { void handleCheckOne(checkBtn); return; }
   });
 
-  setInterval(() => { void loadCarts(); }, 30000);
+  setInterval(() => { void loadCarts(); }, 5000);
   setInterval(() => { void loadSubscriptions(); }, 60000);
 });
 
@@ -123,18 +136,24 @@ async function handleSearch() {
   }
 
   const filters = readFilters();
+  setLoading(true, "正在筛选...");
+  await new Promise(r => setTimeout(r, 30));
   const { filtered, dropReasons } = applyFilters(state.allCandidates, filters);
-  const limited = filtered.slice(0, filters.limit);
-  const diagnostics = buildClientDiagnostics(state.allCandidates.length, filtered.length, limited.length, dropReasons, filters);
+  state.filteredCandidates = filtered;
+  state.currentPage = 1;
+  const paged = filtered.slice(0, PAGE_SIZE);
+  const diagnostics = buildClientDiagnostics(state.allCandidates.length, filtered.length, filtered.length, dropReasons, filters);
+  setLoading(false);
 
-  renderResults(limited);
-  renderDiagnostics(diagnostics, limited);
+  renderResults(filtered, paged);
+  renderDiagnostics(diagnostics, filtered);
+  elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function buildSearchPayload() {
   return {
     query: elements.query.value.trim(),
-    limit: 100,
+    limit: 500,
   };
 }
 
@@ -146,7 +165,6 @@ function readFilters() {
     subtitle: normalizeOptionalText(elements.subtitle.value),
     group: normalizeOptionalText(elements.group.value),
     releaseMode: normalizeOptionalText(elements.releaseMode.value) || "any",
-    limit: normalizeLimit(elements.limit.value),
   };
 }
 
@@ -200,10 +218,10 @@ function applyFilters(candidates, filters) {
   return { filtered, dropReasons };
 }
 
-function buildClientDiagnostics(totalCount, afterFilterCount, afterLimitCount, dropReasons, filters) {
+function buildClientDiagnostics(totalCount, afterFilterCount, displayCount, dropReasons, filters) {
   const beforeCount = totalCount;
   const afterCount = afterFilterCount;
-  const noCandidates = afterLimitCount === 0;
+  const noCandidates = afterCount === 0;
   const filteredOut = beforeCount > 0 && afterCount === 0;
 
   const suggestions = [];
@@ -235,7 +253,6 @@ function buildClientDiagnostics(totalCount, afterFilterCount, afterLimitCount, d
   if (filters.resolution) activeFilters.resolution = filters.resolution;
   if (filters.group) activeFilters.group = filters.group;
   if (filters.subtitle) activeFilters.subtitle = filters.subtitle;
-  if (filters.limit) activeFilters.limit = filters.limit;
 
   return {
     original_query: state.lastQuery,
@@ -305,34 +322,48 @@ function renderExpandedQueries(queries, details = []) {
   `;
 }
 
-function renderResults(candidates) {
-  if (!candidates || candidates.length === 0) {
+function renderResults(allFiltered, paged) {
+  if (!allFiltered || allFiltered.length === 0) {
     elements.results.innerHTML = `<div class="muted">没有可显示的候选资源。</div>`;
     return;
   }
 
+  const totalPages = Math.ceil(allFiltered.length / PAGE_SIZE);
+  const startIdx = (state.currentPage - 1) * PAGE_SIZE;
+  const pageItems = allFiltered.slice(startIdx, startIdx + PAGE_SIZE);
+
   const toolbar = `
-    <div class="toolbar" style="margin-bottom:8px;">
-      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
-        <input type="checkbox" id="select-all-checkbox"> 全选/取消全选
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <label style="display:flex;align-items:center;gap:3px;cursor:pointer;font-size:12px;color:#5f6d80;">
+        <input type="checkbox" id="select-all-checkbox"> 全选本页
       </label>
+      <span style="font-size:12px;color:#5f6d80;">共 ${allFiltered.length} 个候选，第 ${state.currentPage}/${totalPages} 页</span>
     </div>
     <div class="add-to-cart-bar hidden" id="add-to-cart-bar">
-      <button type="button" class="button button-primary" id="add-to-cart-button">加入下载队列并开始下载</button>
+      <button type="button" class="button button-primary" id="add-to-cart-button">加入下载队列</button>
       <span class="muted" id="cart-selection-count"></span>
     </div>
   `;
 
-  elements.results.innerHTML = toolbar + candidates
-    .map((candidate, index) => {
+  const pagination = totalPages > 1 ? `
+    <div class="toolbar" style="justify-content:center;margin-top:12px;">
+      <button type="button" class="button" id="page-prev" ${state.currentPage <= 1 ? "disabled" : ""}>上一页</button>
+      <span class="muted" style="font-size:13px;padding:0 12px;">第 ${state.currentPage} / ${totalPages} 页</span>
+      <button type="button" class="button" id="page-next" ${state.currentPage >= totalPages ? "disabled" : ""}>下一页</button>
+    </div>
+  ` : "";
+
+  elements.results.innerHTML = toolbar + pageItems
+    .map((candidate) => {
+      const globalIndex = allFiltered.indexOf(candidate);
       const parsed = candidate.parsed || {};
-      const detailId = `candidate-details-${index + 1}`;
-      const itemId = `candidate-select-${index}`;
+      const detailId = `candidate-details-${globalIndex + 1}`;
+      const itemId = `candidate-select-${globalIndex}`;
       return `
         <article class="candidate-card">
           <div class="candidate-header">
             <div class="candidate-title-row">
-              <input type="checkbox" class="candidate-select" id="${itemId}" data-candidate-index="${index}">
+              <input type="checkbox" class="candidate-select" id="${itemId}" data-candidate-index="${globalIndex}">
               <label for="${itemId}" class="candidate-title">#${candidate.rank} ${escapeHtml(candidate.title || "-")}</label>
             </div>
             <div class="candidate-actions">
@@ -387,8 +418,9 @@ function renderResults(candidates) {
         </article>
       `;
     })
-    .join("");
+    .join("") + pagination;
 
+  // Bind events
   const bar = document.getElementById("add-to-cart-bar");
   if (bar) {
     const button = document.getElementById("add-to-cart-button");
@@ -408,6 +440,28 @@ function renderResults(candidates) {
   document.querySelectorAll(".candidate-select").forEach((checkbox) => {
     checkbox.addEventListener("change", updateAddToCartBar);
   });
+
+  // Pagination buttons
+  const prevBtn = document.getElementById("page-prev");
+  const nextBtn = document.getElementById("page-next");
+  if (prevBtn) {
+    prevBtn.addEventListener("click", () => {
+      if (state.currentPage > 1) {
+        state.currentPage--;
+        renderResults(allFiltered, allFiltered.slice(0, PAGE_SIZE));
+        elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  }
+  if (nextBtn) {
+    nextBtn.addEventListener("click", () => {
+      if (state.currentPage < totalPages) {
+        state.currentPage++;
+        renderResults(allFiltered, allFiltered.slice(0, PAGE_SIZE));
+        elements.results.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    });
+  }
 }
 
 function renderReasons(reasons) {
@@ -633,7 +687,7 @@ function normalizeOptionalInt(value) {
 }
 
 function normalizeText(value) {
-  return (value || "").toLowerCase().replace(/[\s_-]+/g, " ").trim();
+  return (value || "").toLowerCase().replace(/[\s\[\]\(\)\{\}_\-.|/\\]+/g, "");
 }
 
 function episodeMatchesFilter(candidateEpisode, filterEpisode, isBatch, releaseMode) {
@@ -643,14 +697,6 @@ function episodeMatchesFilter(candidateEpisode, filterEpisode, isBatch, releaseM
   const a = String(candidateEpisode).replace(/^0+/, "") || "0";
   const b = String(filterEpisode).replace(/^0+/, "") || "0";
   return a === b;
-}
-
-function normalizeLimit(value) {
-  const parsed = Number.parseInt(String(value || "20"), 10);
-  if (Number.isNaN(parsed)) {
-    return 20;
-  }
-  return Math.max(1, Math.min(parsed, 100));
 }
 
 function boolLabel(value) {
@@ -719,7 +765,6 @@ function formatFilterKey(key) {
     raw_only: "只看 RAW",
     exclude_batch: "排除合集",
     min_seeders: "最少做种数",
-    limit: "结果数量",
     release_mode: "资源类型",
   };
   return mapping[key] || key;
@@ -783,9 +828,6 @@ async function handleDownload(button) {
     if (response.ok) {
       button.textContent = "已添加";
       button.classList.add("button-downloaded");
-    } else {
-      button.textContent = "失败";
-      button.disabled = false;
     }
   } catch (error) {
     button.textContent = "失败";
@@ -800,7 +842,7 @@ function getSelectedCandidates() {
   const checked = document.querySelectorAll(".candidate-select:checked");
   return Array.from(checked).map((cb) => {
     const index = parseInt(cb.getAttribute("data-candidate-index"), 10);
-    return state.allCandidates[index];
+    return state.filteredCandidates[index];
   }).filter(Boolean);
 }
 
@@ -834,12 +876,8 @@ async function handleAddToCart() {
     if (response.cart_id) {
       document.querySelectorAll(".candidate-select:checked").forEach((cb) => { cb.checked = false; });
       updateAddToCartBar();
-      selectAllCheckbox = document.getElementById("select-all-checkbox");
+      const selectAllCheckbox = document.getElementById("select-all-checkbox");
       if (selectAllCheckbox) selectAllCheckbox.checked = false;
-      // Auto-start the cart
-      try {
-        await apiRequest(`/api/carts/${response.cart_id}/start`, { method: "POST" });
-      } catch (e) { /* start failed, user can manually start */ }
       await loadCarts();
     }
   } catch (error) {
@@ -865,13 +903,23 @@ function renderCarts() {
     return;
   }
 
+  // Preserve user's probe duration edits across polling re-renders
+  const savedDurations = {};
+  document.querySelectorAll(".probe-duration").forEach((el) => {
+    savedDurations[el.getAttribute("data-cart-id")] = el.value;
+  });
+
   elements.carts.innerHTML = carts
     .map((cart) => {
-      const statusLabels = { idle: "待启动", probing: "探测中", downloading: "下载中", done: "已完成", exhausted: "已放弃" };
+      const statusLabels = { idle: "待启动", probing: "探测中", downloading: "下载中", paused: "已暂停", done: "已完成", exhausted: "已放弃" };
       const statusLabel = statusLabels[cart.status] || cart.status;
       const itemCount = (cart.items || []).length;
       const recentEvents = (cart.events || []).slice(-3);
       const canStart = cart.status === "idle" || cart.status === "exhausted";
+      const canPause = cart.status === "downloading";
+      const canResume = cart.status === "paused";
+      const defaultDur = cart.probe_duration_seconds || 20;
+      const durValue = savedDurations[cart.cart_id] || defaultDur;
 
       return `
         <div class="cart-item">
@@ -882,8 +930,11 @@ function renderCarts() {
               <span class="cart-status status-${cart.status}">${statusLabel}</span>
               ${cart.active_title ? `<span class="cart-meta"> | 当前：${escapeHtml(cart.active_title)}</span>` : ""}
             </div>
-            <div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              ${canStart ? `<input type="number" class="probe-duration" data-cart-id="${escapeAttr(cart.cart_id)}" value="${durValue}" min="10" max="600" step="10" style="width:52px;padding:6px 4px;text-align:center;" title="探测时长（秒）">` : ""}
               ${canStart ? `<button type="button" class="button button-primary cart-start-button" data-cart-id="${escapeAttr(cart.cart_id)}">开始下载</button>` : ""}
+              ${canPause ? `<button type="button" class="button cart-pause-button" data-cart-id="${escapeAttr(cart.cart_id)}">暂停</button>` : ""}
+              ${canResume ? `<button type="button" class="button button-primary cart-resume-button" data-cart-id="${escapeAttr(cart.cart_id)}">恢复</button>` : ""}
               <button type="button" class="button button-muted cart-delete-button" data-cart-id="${escapeAttr(cart.cart_id)}">删除</button>
             </div>
           </div>
@@ -904,15 +955,52 @@ function renderCarts() {
 async function handleStartCart(button) {
   const cartId = button.getAttribute("data-cart-id");
   if (!cartId) return;
+  const durInput = document.querySelector(`.probe-duration[data-cart-id="${cartId}"]`);
+  const duration = durInput ? parseInt(durInput.value, 10) || 20 : 20;
   button.disabled = true;
   button.textContent = "启动中...";
   try {
-    await apiRequest(`/api/carts/${cartId}/start`, { method: "POST" });
+    await apiRequest(`/api/carts/${cartId}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ probe_duration_seconds: duration }),
+    });
     await loadCarts();
   } catch (error) {
     console.error("Start cart failed:", error);
+    alert(`启动失败：${error.message || "未知错误"}`);
     button.disabled = false;
     button.textContent = "开始下载";
+  }
+}
+
+async function handlePauseCart(button) {
+  const cartId = button.getAttribute("data-cart-id");
+  if (!cartId) return;
+  button.disabled = true;
+  button.textContent = "暂停中...";
+  try {
+    await apiRequest(`/api/carts/${cartId}/pause`, { method: "POST" });
+    await loadCarts();
+  } catch (error) {
+    console.error("Pause cart failed:", error);
+    button.disabled = false;
+    button.textContent = "暂停";
+  }
+}
+
+async function handleResumeCart(button) {
+  const cartId = button.getAttribute("data-cart-id");
+  if (!cartId) return;
+  button.disabled = true;
+  button.textContent = "恢复中...";
+  try {
+    await apiRequest(`/api/carts/${cartId}/resume`, { method: "POST" });
+    await loadCarts();
+  } catch (error) {
+    console.error("Resume cart failed:", error);
+    button.disabled = false;
+    button.textContent = "恢复";
   }
 }
 

@@ -11,7 +11,7 @@ from aqsd.models import AnimeRule
 
 class AppSettings(BaseModel):
     database: str = "./data/app.db"
-    interval_seconds: int = 300
+    interval_seconds: int = 1200
     log_level: str = "INFO"
 
 
