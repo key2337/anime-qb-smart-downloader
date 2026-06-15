@@ -911,7 +911,7 @@ function renderCarts() {
 
   elements.carts.innerHTML = carts
     .map((cart) => {
-      const statusLabels = { idle: "待启动", probing: "探测中", downloading: "下载中", paused: "已暂停", done: "已完成", exhausted: "已放弃" };
+      const statusLabels = { idle: "待启动", waiting: "排队中", probing: "探测中", downloading: "下载中", paused: "已暂停", done: "已完成", exhausted: "已放弃" };
       const statusLabel = statusLabels[cart.status] || cart.status;
       const itemCount = (cart.items || []).length;
       const recentEvents = (cart.events || []).slice(-3);

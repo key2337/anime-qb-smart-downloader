@@ -278,6 +278,7 @@ select {
 }
 
 .status-idle { background: #eef2f7; color: #5f6d80; }
+.status-waiting { background: #e8daef; color: #6c3483; }
 .status-probing { background: #fff3cd; color: #856404; }
 .status-downloading { background: #cce5ff; color: #004085; }
 .status-done { background: #d4edda; color: #155724; }

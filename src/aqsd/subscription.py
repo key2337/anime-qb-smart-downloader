@@ -223,11 +223,10 @@ class SubscriptionManager:
             candidates = by_episode[(anime_name, episode)]
             items = [_candidate_to_cart_dict(c) for c in candidates]
             try:
-                cart = self._cart_service.create_cart(anime_name, episode, items)
-                self._cart_service.start_cart(cart.cart_id)
+                cart = self._cart_service.enqueue_cart(anime_name, episode, items)
                 result.new_episodes.append(episode)
                 result.created_carts.append(cart.cart_id)
-                logger.info("Subscription {} created cart {} for {}/{}",
+                logger.info("Subscription {} enqueued cart {} for {}/{}",
                             sub.name, cart.cart_id, anime_name, episode)
                 break  # only one cart per check
             except Exception as exc:

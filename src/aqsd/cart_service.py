@@ -130,6 +130,7 @@ class CartService:
             logger.warning("Failed to clean up qB torrents for cart {}: {}", cart_id, exc)
         self._store.delete(cart_id)
         logger.info("Cart {} deleted", cart_id)
+        self._process_queue()
         return True
 
     # ── pause / resume ─────────────────────────────────────
@@ -152,6 +153,7 @@ class CartService:
         ))
         self._store.save(cart)
         logger.info("Cart {} paused", cart_id)
+        self._process_queue()
         return cart
 
     def resume_cart(self, cart_id: str) -> Cart | None:
@@ -241,6 +243,7 @@ class CartService:
                     message="所有候选已尝试完毕，无可用资源",
                 ))
                 self._store.save(cart)
+                self._process_queue()
                 return
 
             attempts: dict[str, CartItem] = {}
@@ -265,6 +268,7 @@ class CartService:
                         message="probe 失败：无可用 info_hash 候选",
                     ))
                     self._store.save(cart)
+                    self._process_queue()
                     return
 
                 time.sleep(2)  # let qB process the additions
@@ -345,6 +349,7 @@ class CartService:
                         message=msg,
                     ))
                     self._store.save(cart)
+                    self._process_queue()
                     return
 
                 # Delete losers
@@ -390,6 +395,7 @@ class CartService:
                         message="probe 异常退出，回退到 idle",
                     ))
                     self._store.save(cart)
+                    self._process_queue()
 
     @staticmethod
     def _probe_score(torrent: dict) -> float:
@@ -410,6 +416,36 @@ class CartService:
         # Seeds/peers indicate swarm health; availability = can complete
         # Progress is a minimal tiebreaker (1% = 0.5 pts)
         return speed_score + connected_seeds * 3 + peers * 1 + availability * 10 + progress * 50
+
+    # ── queue ──────────────────────────────────────────────
+
+    def enqueue_cart(self, anime_name: str, episode: str, items: list[dict]) -> Cart:
+        """Create a cart with 'waiting' status and process the queue."""
+        cart = self.create_cart(anime_name, episode, items)
+        cart.status = "waiting"
+        cart.events.append(CartEvent(
+            timestamp=_now_iso(),
+            type="enqueued",
+            message="进入等待队列",
+        ))
+        self._store.save(cart)
+        self._process_queue()
+        return cart
+
+    def _process_queue(self) -> None:
+        """If no cart is probing/downloading, start the oldest waiting cart."""
+        active = any(
+            c.status in ("probing", "downloading")
+            for c in self._store.list_all()
+        )
+        if active:
+            return
+        waiting = sorted(
+            [c for c in self._store.list_all() if c.status == "waiting"],
+            key=lambda c: c.created_at,
+        )
+        if waiting:
+            self.start_cart(waiting[0].cart_id)
 
     # ── monitor ────────────────────────────────────────────
 
@@ -448,12 +484,12 @@ class CartService:
             if not cart.active_hash:
                 continue
             torrent = torrents.get(cart.active_hash)
-            if torrent is None:
+            if torrent is None or self._is_completed(torrent):
                 cart.status = "done"
                 cart.events.append(CartEvent(
                     timestamp=_now_iso(),
                     type="done",
-                    message="下载完成或已从 qB 移除",
+                    message="下载完成",
                 ))
                 self._store.save(cart)
                 if self._db and cart.anime_name and cart.episode:
@@ -465,10 +501,17 @@ class CartService:
                         source="",
                     ))
                     logger.info("Marked {}/{} as downloaded", cart.anime_name, cart.episode)
+                self._process_queue()
                 continue
 
             if self._is_dead(torrent):
                 self._handle_dead(cart, qb)
+
+    @staticmethod
+    def _is_completed(torrent: dict) -> bool:
+        state = (torrent.get("state") or "").lower()
+        progress = float(torrent.get("progress", 0) or 0)
+        return progress >= 1.0 or state.endswith("up")
 
     def _is_dead(self, torrent: dict) -> bool:
         state = (torrent.get("state") or "").lower()
@@ -517,6 +560,7 @@ class CartService:
                 message=f"已达到最大回退次数（{cart.max_fallbacks}），放弃",
             ))
             self._store.save(cart)
+            self._process_queue()
             return
 
         remaining = [
@@ -531,6 +575,7 @@ class CartService:
                 message="所有候选已尝试完毕",
             ))
             self._store.save(cart)
+            self._process_queue()
             return
 
         if self._has_other_active_cart(cart.cart_id):
@@ -541,6 +586,7 @@ class CartService:
                 message="有其他购物车正在运行，等待中",
             ))
             self._store.save(cart)
+            self._process_queue()
             return
 
         cart.status = "probing"

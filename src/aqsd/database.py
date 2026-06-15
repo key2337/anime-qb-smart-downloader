@@ -504,7 +504,7 @@ class Database:
         return cursor.lastrowid or 0
 
     def update_subscription_check(self, sub_id: int, last_episode: str | None = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now().isoformat(timespec="seconds")
         if last_episode is not None:
             self.conn.execute(
                 "UPDATE subscriptions SET last_check_at = ?, last_episode = ? WHERE id = ?",
@@ -524,12 +524,13 @@ class Database:
 
     def add_subscription_event(self, sub_id: int, event_type: str, anime_name: str = "",
                                episode: str | None = None, details: str = "") -> None:
+        now = datetime.now().isoformat(timespec="seconds")
         self.conn.execute(
             """
-            INSERT INTO subscription_events(subscription_id, event_type, anime_name, episode, details)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO subscription_events(subscription_id, event_type, anime_name, episode, details, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (sub_id, event_type, anime_name, episode, details),
+            (sub_id, event_type, anime_name, episode, details, now),
         )
         self.conn.commit()
 
