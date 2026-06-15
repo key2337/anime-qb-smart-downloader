@@ -1,8 +1,6 @@
 const PAGE_SIZE = 20;
 
 const state = {
-  lastExpandedQueries: [],
-  lastExpandedQueryDetails: [],
   lastQuery: "",
   allCandidates: [],
   filteredCandidates: [],
@@ -14,7 +12,6 @@ const elements = {
   health: document.getElementById("health-status"),
   formError: document.getElementById("form-error"),
   loading: document.getElementById("loading"),
-  expandedQueries: document.getElementById("expanded-queries"),
   results: document.getElementById("results"),
   diagnostics: document.getElementById("diagnostics"),
   searchForm: document.getElementById("search-form"),
@@ -121,9 +118,6 @@ async function handleSearch() {
         body: JSON.stringify(payload),
       });
       state.allCandidates = response.candidates || [];
-      state.lastExpandedQueries = response.expanded_queries || [];
-      state.lastExpandedQueryDetails = (response.diagnostics && response.diagnostics.expanded_query_details) || [];
-      renderExpandedQueries(state.lastExpandedQueries, state.lastExpandedQueryDetails);
     } catch (error) {
       state.allCandidates = [];
       renderResults([]);
@@ -287,37 +281,6 @@ function renderHealth(payload) {
       <li>RSS：${boolLabel(sources.rss)}</li>
       <li>追番订阅：${subCount} 个</li>
       <li>下载队列：${cartCount} 个</li>
-    </ul>
-  `;
-}
-
-function renderExpandedQueries(queries, details = []) {
-  if ((!queries || queries.length === 0) && (!details || details.length === 0)) {
-    elements.expandedQueries.textContent = "还没有解析过标题。";
-    return;
-  }
-
-  if (details && details.length > 0) {
-    elements.expandedQueries.innerHTML = `
-      <ul class="simple-list">
-        ${details
-          .map(
-            (item) => `
-              <li>
-                <strong>${escapeHtml(item.text)}</strong>
-                <span class="muted">来源：${escapeHtml(item.source || "-")} / 语言：${escapeHtml(item.language || "unknown")} / 置信度：${formatConfidence(item.confidence)} / 搜索：${item.search_eligible ? "使用" : "仅展示"}</span>
-              </li>
-            `,
-          )
-          .join("")}
-      </ul>
-    `;
-    return;
-  }
-
-  elements.expandedQueries.innerHTML = `
-    <ul class="simple-list">
-      ${queries.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
     </ul>
   `;
 }
@@ -503,88 +466,12 @@ function renderDiagnostics(diagnostics, candidates = []) {
         </div>
       </div>
       ${filteredOut ? renderRelaxHints() : ""}
-      ${renderResolutionStatus(diagnostics)}
-      ${renderResolvedSubject(diagnostics.resolved_subject)}
-      ${renderRejectedSubjects("候选 / 歧义 subject", diagnostics.candidate_subjects)}
-      ${renderKeyValueList("尝试过的标题", diagnostics.expanded_queries)}
-      ${renderExpandedQueryDetailList("标题扩展详情", diagnostics.expanded_query_details)}
-      ${renderRejectedSubjects("已拒绝的 subject", diagnostics.rejected_subjects)}
-      ${renderKeyValueList("搜索来源", diagnostics.sources)}
       ${renderObjectList("当前过滤条件", diagnostics.active_filters)}
       ${renderKeyValueList("建议", diagnostics.suggestions)}
     </div>
   `;
 }
 
-function renderResolutionStatus(diagnostics) {
-  const status = diagnostics && diagnostics.resolution_status ? diagnostics.resolution_status : "unresolved";
-  const needsReview = Boolean(diagnostics && diagnostics.needs_review);
-  const needsReviewLabel = needsReview ? "\u662f" : "\u5426";
-  return `
-    <div class="section-label">解析状态</div>
-    <div class="parsed-grid">
-      <div>resolution_status: ${escapeHtml(formatValue(status))}</div>
-      <div>needs_review: ${needsReviewLabel}</div>
-    </div>
-  `;
-}
-
-function renderResolvedSubject(subject) {
-  if (!subject) {
-    return `<div class="section-label">已解析作品</div><div class="muted">当前没有选中的 subject。</div>`;
-  }
-  return `
-    <div class="section-label">已解析作品</div>
-    <div class="parsed-grid">
-      <div>source: ${escapeHtml(formatValue(subject.source))}</div>
-      <div>subject_id: ${escapeHtml(formatValue(subject.subject_id))}</div>
-      <div>canonical: ${escapeHtml(formatValue(subject.canonical))}</div>
-      <div>confidence: ${escapeHtml(formatConfidence(subject.confidence))}</div>
-      <div>reason: ${escapeHtml(formatValue(subject.reason))}</div>
-    </div>
-  `;
-}
-
-function renderExpandedQueryDetailList(title, details) {
-  const values = Array.isArray(details) && details.length > 0 ? details : [];
-  if (values.length === 0) {
-    return "";
-  }
-  return `
-    <div class="section-label">${escapeHtml(title)}</div>
-    <ul class="kv-list">
-      ${values
-        .map(
-          (item) => `
-            <li>
-              ${escapeHtml(item.text)}
-              <span class="muted">（${escapeHtml(item.source || "-")} / ${escapeHtml(item.language || "unknown")} / ${item.search_eligible ? "用于搜索" : "仅展示"} / 置信度 ${formatConfidence(item.confidence)}）</span>
-            </li>
-          `,
-        )
-        .join("")}
-    </ul>
-  `;
-}
-
-function renderRejectedSubjects(title, values) {
-  const items = Array.isArray(values) ? values : [];
-  if (items.length === 0) {
-    return "";
-  }
-  return `
-    <div class="section-label">${escapeHtml(title)}</div>
-    <ul class="kv-list">
-      ${items
-        .map(
-          (item) => `
-            <li>${escapeHtml(formatValue(item.canonical))} <span class="muted">（id=${escapeHtml(formatValue(item.subject_id))} / 置信度 ${formatConfidence(item.confidence)} / ${escapeHtml(formatValue(item.reason))}）</span></li>
-          `,
-        )
-        .join("")}
-    </ul>
-  `;
-}
 
 function renderRelaxHints() {
   return `
