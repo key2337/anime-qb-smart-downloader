@@ -29,7 +29,8 @@
           <button type="submit" class="button button-primary" id="search-button">搜索</button>
         </div>
 
-        <div class="grid">
+        <span class="filter-toggle" onclick="this.nextElementSibling.classList.toggle('hidden'); this.textContent = this.textContent.includes('展开') ? '收起筛选 ▲' : '展开筛选 ▼'">展开筛选 ▼</span>
+        <div class="grid hidden">
           <label>
             <span>集数</span>
             <input id="episode" name="episode" type="text" placeholder="例如 01 或 21">
@@ -74,7 +75,7 @@
     </section>
 
     <section class="card">
-      <h2>标题扩展结果</h2>
+      <h2 class="section-toggle" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('hidden')">标题扩展结果</h2>
       <div id="expanded-queries" class="list-block muted">还没有解析过标题。</div>
     </section>
 
@@ -85,7 +86,7 @@
     </section>
 
     <section class="card">
-      <h2>搜索诊断</h2>
+      <h2 class="section-toggle" onclick="this.classList.toggle('collapsed'); this.nextElementSibling.classList.toggle('hidden')">搜索诊断</h2>
       <div id="diagnostics" class="muted">诊断信息会在搜索后显示。</div>
     </section>
 
@@ -121,6 +122,6 @@
     </div>
   </main>
 
-  <script src="/app.js?v=20"></script>
+  <script src="/app.js?v=21"></script>
 </body>
 </html>
